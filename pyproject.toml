@@ -1,0 +1,107 @@
+[project]
+name = "vgi-adbc"
+version = "0.1.0"
+description = "Query PostgreSQL, SQLite, and any ADBC database from DuckDB over VGI — server-side ADBC via an embedded haybarn DuckDB + the adbc_scanner community extension"
+readme = "README.md"
+keywords = [
+    "duckdb",
+    "vgi",
+    "adbc",
+    "arrow",
+    "apache-arrow",
+    "postgresql",
+    "sqlite",
+    "database",
+    "federation",
+]
+license = { file = "LICENSE" }
+authors = [{ name = "Query Farm LLC", email = "hello@query.farm" }]
+requires-python = ">=3.13"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Database :: Front-Ends",
+]
+dependencies = [
+    "vgi-python>=0.14.0",
+    "pyarrow>=17",
+    # haybarn is a duckdb-python drop-in (v1.5.4) whose community extension
+    # repository serves a recent adbc_scanner build. The worker runs its ADBC
+    # queries in an in-process haybarn DuckDB. Prerelease floor is intentional —
+    # haybarn currently ships as release candidates.
+    "haybarn>=1.5.4rc1",
+]
+
+[project.optional-dependencies]
+# HTTP-serving extra — installed by the published Docker image (`.[serve]`) so the
+# container can serve the worker over HTTP (/health + VGI RPC) via `vgi-serve --http`.
+# A plain stdio install stays lean (DuckDB owns the pipe, no HTTP server needed).
+serve = ["vgi-python[http]>=0.14.0"]
+dev = [
+    "mypy",
+    "pyarrow-stubs",
+    "pytest",
+    "pytest-xdist",
+    "ruff",
+]
+
+[project.scripts]
+vgi-adbc-worker = "vgi_adbc.worker:main"
+
+[project.urls]
+Repository = "https://github.com/Query-farm/vgi-adbc"
+Issues = "https://github.com/Query-farm/vgi-adbc/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vgi_adbc"]
+
+[tool.uv]
+# haybarn releases as rc builds; allow uv to resolve the prerelease floor above.
+prerelease = "allow"
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests don't need the docstring family.
+"tests/*" = ["D"]
+# Benchmark scripts are internal tooling, not shipped API: skip the docstring family.
+"bench/*" = ["D"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+# haybarn (the duckdb-python drop-in) ships no type stubs.
+module = "haybarn.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "duckdb.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

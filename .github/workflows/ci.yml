@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['README.md']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['README.md']
+  workflow_dispatch:
+  # Allow release.yml / docker-publish.yml to gate on this exact suite.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # pytest (pure-logic tests always run; engine tests exercise a real SQLite fixture
+  # over ADBC and skip when adbc_scanner can't be loaded), ruff, mypy.
+  test:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Ruff format check
+        run: uv run ruff format --check .
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Type check (mypy)
+        run: uv run mypy vgi_adbc/
+      - name: Tests
+        run: uv run pytest -q
+
+  # SQLLogic (haybarn) E2E: the worker attached to a real DuckDB with the vgi extension
+  # from the community repository. The worker installs adbc_scanner into its own embedded
+  # haybarn DuckDB and attaches a SQLite fixture over ADBC — no external server needed.
+  e2e:
+    name: SQLLogic e2e (haybarn)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install worker environment
+        run: uv sync --extra dev
+      - name: Install the haybarn unittest runner
+        run: |
+          uv tool install haybarn-unittest
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install the vgi community extension
+        run: echo "INSTALL vgi FROM community;" | uvx haybarn-cli
+      - name: Run SQLLogic suite against the worker
+        run: ./run_tests.sh
+
+  # HTTP-transport E2E: serve the worker over HTTP and drive it with real DuckDB clients over
+  # an http:// ATTACH. The pytest suite (tests/test_http_transport.py) asserts schema/scan/
+  # pushdown/adbc_query/read-only across the HTTP transport from a Python haybarn client; the
+  # bash E2E adds a haybarn-cli check. Both use the single-waitress process so the sticky ADBC
+  # session lives in-process. (The main `test` job skips these — it has no `serve` extra.)
+  http-e2e:
+    name: HTTP transport e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install worker environment (with HTTP serving)
+        run: uv sync --extra dev --extra serve
+      - name: HTTP transport pytest suite
+        run: uv run pytest -q tests/test_http_transport.py
+      - name: Run the HTTP E2E
+        run: ./run_http_tests.sh
+
+  # Metadata-quality gate (vgi-lint). The connector needs a live database to introspect,
+  # so we build the SQLite fixture and attach it via --attach-option. --no-execute keeps
+  # it deterministic; the e2e job covers live execution. fail-on info = strict.
+  lint:
+    name: metadata quality (vgi-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install worker environment
+        run: uv sync --extra dev
+      - name: Build the SQLite fixture
+        run: uv run python test/make_fixture.py "${{ runner.temp }}/lint_fixture.sqlite"
+      - name: vgi-lint
+        run: >
+          uvx --prerelease allow --from vgi-lint-check vgi-lint lint
+          "${{ github.workspace }}/bin/vgi-adbc-worker"
+          --attach-option driver=sqlite
+          --attach-option uri=${{ runner.temp }}/lint_fixture.sqlite
+          --fail-on info --no-execute

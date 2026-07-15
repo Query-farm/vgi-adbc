@@ -1,0 +1,124 @@
+# name: test/sql/adbc_sqlite.test
+# description: Attach a SQLite database over the ADBC worker; assert schema, counts, projection + filter pushdown.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+require-env VGI_ADBC_TEST_SQLITE
+
+# Attach the SQLite fixture through the worker over ADBC. The worker installs
+# adbc_scanner into its own embedded haybarn DuckDB and holds the connection.
+statement ok
+ATTACH 'adbc' AS db (TYPE vgi, LOCATION '${VGI_TEST_WORKER}', driver 'sqlite', uri '${VGI_ADBC_TEST_SQLITE}');
+
+# --- Schema fidelity: SQLite types map through ADBC/Arrow to DuckDB types. ---
+
+query T
+SELECT column_type FROM (DESCRIBE SELECT * FROM db.main.employees) WHERE column_name = 'id';
+----
+BIGINT
+
+query T
+SELECT column_type FROM (DESCRIBE SELECT * FROM db.main.employees) WHERE column_name = 'name';
+----
+VARCHAR
+
+query T
+SELECT column_type FROM (DESCRIBE SELECT * FROM db.main.employees) WHERE column_name = 'salary';
+----
+DOUBLE
+
+# --- Introspection: the remote relations are discoverable via the catalog. ---
+
+query T
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'db' AND table_name = 'employees';
+----
+1
+
+# --- Full scan. ---
+
+query I
+SELECT count(*) FROM db.main.employees;
+----
+5
+
+# --- Filter pushdown: the WHERE is rendered to SQL and pushed to SQLite. ---
+
+query I
+SELECT count(*) FROM db.main.employees WHERE salary > 90000;
+----
+2
+
+query I
+SELECT count(*) FROM db.main.employees WHERE dept IN ('eng', 'ops');
+----
+3
+
+query T
+SELECT name FROM db.main.employees WHERE id = 3;
+----
+Carol
+
+query I
+SELECT sum(salary)::BIGINT FROM db.main.employees WHERE active = 1;
+----
+320000
+
+# --- Projection pushdown: only the requested column is scanned. ---
+
+query T
+SELECT string_agg(name, ',' ORDER BY name) FROM db.main.employees WHERE dept = 'eng';
+----
+Alice,Bob
+
+# --- Views are exposed as scannable tables. ---
+
+query I
+SELECT count(*) FROM db.main.active_high;
+----
+3
+
+# --- A predicate combining pushed filters returns the right rows. ---
+
+query TT
+SELECT name, dept FROM db.main.employees WHERE salary BETWEEN 50000 AND 100000 ORDER BY id;
+----
+Bob	eng
+Carol	sales
+Dave	sales
+
+# --- Raw SQL passthrough: adbc_query runs native SQL on the remote. ---
+
+query II
+SELECT id, active FROM db.main.adbc_query('SELECT id, active FROM employees WHERE dept = ''eng''') ORDER BY id;
+----
+1	1
+2	1
+
+query I
+SELECT count(*) FROM db.main.adbc_query('SELECT * FROM employees');
+----
+5
+
+# A native-only construct the mirrored catalog cannot express (SQLite PRAGMA).
+query T
+SELECT name FROM db.main.adbc_query('PRAGMA table_info(employees)') WHERE pk = 1;
+----
+id
+
+# --- Read-only guarantee: adbc_query cannot mutate the source under a read-only attach. ---
+# The write is rejected at the source (the raw handle is sealed read-only).
+statement error
+SELECT * FROM db.main.adbc_query('INSERT INTO employees VALUES (99, ''Mallory'', ''x'', 1, 1)');
+----
+
+# The follow-up query works even though the passthrough error made the worker pool route this
+# call to a fresh process: the session is transparently rebuilt from its sealed target
+# (stateless reconnect). And the blocked write left no trace at the source.
+query I
+SELECT count(*) FROM db.main.employees WHERE id = 99;
+----
+0
+
+statement ok
+DETACH db;

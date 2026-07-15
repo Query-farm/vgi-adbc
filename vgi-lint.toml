@@ -1,0 +1,40 @@
+[tool.vgi-lint-check]
+select = ["ALL"]
+fail_on = "info"
+
+# This worker is a *passthrough connector*: its schemas, tables, views, and columns
+# are discovered live from whatever remote database a user ATTACHes — they are not
+# authored here and differ per attachment. So the per-table / per-column / per-
+# constraint documentation and example rules cannot apply (there is nothing static
+# to document). The connector *itself* — the catalog and its schema — is documented
+# richly (see vgi_adbc/metadata.py); those rules stay enforced. The exemptions below
+# are the remote-object rules only.
+ignore = [
+    "VGI307", # adbc_query returns a runtime-determined schema (whatever the passthrough SQL yields) — there is no fixed result schema to declare
+    "VGI151", # min examples counts examples on advertised tables/functions; ours live on the catalog/schema and the internal scan function (tables are dynamic)
+    "VGI111", # table has no comment — remote tables are the user's, discovered live
+    "VGI112", # table missing vgi.doc_llm — idem
+    "VGI113", # table missing vgi.doc_md — idem
+    "VGI123", # object needs a classifying tag — enforced on our schema; remote tables can't carry one
+    "VGI126", # object needs vgi.keywords — enforced on catalog/schema; not on remote tables
+    "VGI201", # column comment coverage — remote columns are the user's
+    "VGI202", # column has no comment — idem
+    "VGI411", # each object should carry a vgi.category — remote tables can't be tagged
+    "VGI412", # a declared category must contain a member — every category would be empty (dynamic tables)
+    "VGI413", # schema must declare a vgi.categories registry — pointless when no object can join a category
+    "VGI501", # tables should ship vgi.example_queries — remote tables are dynamic
+    "VGI511", # every object called by an example — cannot pre-name a user's tables
+    "VGI520", # every object exercised by an agent test task — cannot pre-name a user's tables
+    "VGI806", # no constraints declared on any table — remote schema owns constraints
+    "VGI807", # each table should declare a primary key — idem
+]
+
+[tool.vgi-lint-check.options]
+column_comment_min_ratio = 0.8
+
+[tool.vgi-lint-check.execution]
+# The scan probes attach a live SQLite fixture over ADBC; give the worker room to
+# install/load adbc_scanner on first use. CI runs the gate with --no-execute.
+scan_timeout = 120
+timeout = 120
+concurrency = 1

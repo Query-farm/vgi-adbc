@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Launch wrapper so DuckDB's vgi extension can spawn this Python worker via a plain
+# filesystem LOCATION:
+#
+#   ATTACH 'pg' AS pg (TYPE vgi, LOCATION '/path/to/vgi-adbc/bin/vgi-adbc-worker',
+#                      driver 'postgresql', uri 'postgresql://user:pw@host:5432/db');
+#
+# The worker speaks Arrow IPC over stdin/stdout (Worker.run()). `uv run` resolves the
+# project's environment (vgi-python + haybarn + pyarrow) and execs the console script;
+# uv's own diagnostics go to stderr, so stdout stays a clean Arrow IPC stream.
+set -euo pipefail
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec uv run --project "$REPO_ROOT" --quiet vgi-adbc-worker "$@"
