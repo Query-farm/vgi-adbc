@@ -15,6 +15,9 @@ otherwise (the dedicated CI ``http-e2e`` job installs the extra and guarantees i
 from __future__ import annotations
 
 import contextlib
+import os
+import re
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -29,6 +32,12 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Opt-in remote databases for the "arbitrary server over HTTP" tests. Set to a DSN to run:
+#   VGI_ADBC_TEST_PG=postgresql://postgres:pw@127.0.0.1:5432/app
+#   VGI_ADBC_TEST_MYSQL=root:pw@tcp(127.0.0.1:3306)/app   (the ADBC MySQL Go-style DSN)
+_PG_DSN = os.environ.get("VGI_ADBC_TEST_PG")
+_MYSQL_DSN = os.environ.get("VGI_ADBC_TEST_MYSQL")
 
 _EMPLOYEES = [
     (1, "Alice", "eng", 120000.0, 1),
@@ -115,10 +124,8 @@ def http_worker(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str,
         log.close()
 
 
-@pytest.fixture
-def client(http_worker: tuple[str, str]):  # noqa: ANN201 - haybarn connection
-    """A DuckDB (haybarn) client attached to the HTTP worker; detaches on teardown."""
-    location, sqlite_path = http_worker
+def _vgi_client():  # noqa: ANN202 - haybarn connection with the vgi extension loaded
+    """Open a haybarn DuckDB client with the ``vgi`` extension loaded (skip if unavailable)."""
     try:
         import haybarn
     except ImportError:
@@ -133,6 +140,14 @@ def client(http_worker: tuple[str, str]):  # noqa: ANN201 - haybarn connection
     except Exception as exc:  # noqa: BLE001 - offline / extension unavailable
         con.close()
         pytest.skip(f"vgi client extension unavailable: {exc}")
+    return con
+
+
+@pytest.fixture
+def client(http_worker: tuple[str, str]):  # noqa: ANN201 - haybarn connection
+    """A DuckDB (haybarn) client attached to the HTTP worker (SQLite); detaches on teardown."""
+    location, sqlite_path = http_worker
+    con = _vgi_client()
     con.execute(f"ATTACH 'adbc' AS db (TYPE vgi, LOCATION '{location}', driver 'sqlite', uri '{sqlite_path}')")
     try:
         yield con
@@ -192,3 +207,108 @@ def test_http_readonly_blocks_writes_and_stays_usable(client) -> None:  # noqa: 
     # usable for follow-up queries after the error.
     assert client.execute("SELECT count(*) FROM db.main.employees WHERE id = 99").fetchone()[0] == 0
     assert client.execute("SELECT count(*) FROM db.main.employees").fetchone()[0] == 5
+
+
+# ---------------------------------------------------------------------------------------------
+# Arbitrary remote servers over HTTP (opt-in): the connector is driver-agnostic, so the HTTP
+# transport behaves identically for PostgreSQL, MySQL, etc. These prove a *non-embedded* server
+# works end-to-end over http:// — attach + introspect + scan + filter pushdown. They seed a
+# throwaway `http_probe` table themselves and skip unless the matching DSN env is set.
+# ---------------------------------------------------------------------------------------------
+
+_PROBE_ROWS = "(1, 'alice'), (2, 'bob'), (3, 'carol')"
+
+
+def _seed_pg(dsn: str) -> None:
+    if shutil.which("psql") is None:
+        pytest.skip("psql client not available to seed PostgreSQL")
+    sql = (
+        "DROP TABLE IF EXISTS http_probe;"
+        "CREATE TABLE http_probe (id int PRIMARY KEY, name text);"
+        f"INSERT INTO http_probe VALUES {_PROBE_ROWS};"
+    )
+    try:
+        subprocess.run(["psql", dsn, "-v", "ON_ERROR_STOP=1", "-q", "-c", sql], check=True, timeout=60)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        pytest.skip(f"cannot reach/seed PostgreSQL: {exc}")
+
+
+def _mysql_cli_args(dsn: str) -> list[str]:
+    # Parse the ADBC MySQL Go DSN: user:pw@tcp(host:port)/db
+    m = re.match(r"(?P<user>[^:]+):(?P<pw>[^@]*)@tcp\((?P<host>[^:]+):(?P<port>\d+)\)/(?P<db>[^?]+)", dsn)
+    if not m:
+        pytest.skip(f"VGI_ADBC_TEST_MYSQL is not an ADBC MySQL DSN (user:pw@tcp(host:port)/db): {dsn!r}")
+    g = m.groupdict()
+    return [f"-h{g['host']}", f"-P{g['port']}", f"-u{g['user']}", f"-p{g['pw']}", g["db"]]
+
+
+def _seed_mysql(dsn: str) -> None:
+    if shutil.which("mysql") is None:
+        pytest.skip("mysql client not available to seed MySQL")
+    args = _mysql_cli_args(dsn)
+    sql = (
+        "DROP TABLE IF EXISTS http_probe;"
+        "CREATE TABLE http_probe (id int PRIMARY KEY, name varchar(50));"
+        f"INSERT INTO http_probe VALUES {_PROBE_ROWS};"
+    )
+    try:
+        subprocess.run(["mysql", *args, "-e", sql], check=True, timeout=60)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        pytest.skip(f"cannot reach/seed MySQL: {exc}")
+
+
+def _remote_client(http_worker: tuple[str, str], alias: str, driver: str, uri: str):  # noqa: ANN202
+    location, _ = http_worker
+    con = _vgi_client()
+    try:
+        con.execute(f"ATTACH 'adbc' AS {alias} (TYPE vgi, LOCATION '{location}', driver '{driver}', uri '{uri}')")
+    except Exception as exc:  # noqa: BLE001 - driver missing / server unreachable
+        con.close()
+        pytest.skip(f"cannot attach {driver} over HTTP: {exc}")
+    return con
+
+
+@pytest.fixture
+def pg_http_client(http_worker: tuple[str, str]):  # noqa: ANN201
+    if not _PG_DSN:
+        pytest.skip("set VGI_ADBC_TEST_PG to a PostgreSQL DSN to run")
+    _seed_pg(_PG_DSN)
+    con = _remote_client(http_worker, "pg", "postgresql", _PG_DSN)
+    try:
+        yield con
+    finally:
+        with contextlib.suppress(Exception):
+            con.execute("DETACH pg")
+        con.close()
+
+
+@pytest.fixture
+def mysql_http_client(http_worker: tuple[str, str]):  # noqa: ANN201
+    if not _MYSQL_DSN:
+        pytest.skip("set VGI_ADBC_TEST_MYSQL to an ADBC MySQL DSN to run")
+    _seed_mysql(_MYSQL_DSN)
+    con = _remote_client(http_worker, "my", "mysql", _MYSQL_DSN)
+    try:
+        yield con
+    finally:
+        with contextlib.suppress(Exception):
+            con.execute("DETACH my")
+        con.close()
+
+
+def test_http_postgresql_scan_and_pushdown(pg_http_client) -> None:  # noqa: ANN001
+    # PostgreSQL over the HTTP transport: introspect + scan + filter pushdown. PG surfaces the
+    # table under the `public` schema.
+    assert pg_http_client.execute("SELECT count(*) FROM pg.public.http_probe").fetchone()[0] == 3
+    rows = pg_http_client.execute("SELECT name FROM pg.public.http_probe WHERE id = 2").fetchall()
+    assert [r[0] for r in rows] == ["bob"]
+    cols = [r[0] for r in pg_http_client.execute("DESCRIBE SELECT id, name FROM pg.public.http_probe").fetchall()]
+    assert cols == ["id", "name"]
+
+
+def test_http_mysql_scan_and_pushdown(mysql_http_client) -> None:  # noqa: ANN001
+    # MySQL over the HTTP transport. The ADBC MySQL driver surfaces the database as the `main`
+    # schema (verified), so the relation is `my.main.http_probe`.
+    assert mysql_http_client.execute("SELECT count(*) FROM my.main.http_probe").fetchone()[0] == 3
+    rows = mysql_http_client.execute("SELECT name FROM my.main.http_probe WHERE id = 1").fetchall()
+    assert [r[0] for r in rows] == ["alice"]

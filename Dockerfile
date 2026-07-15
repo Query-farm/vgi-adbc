@@ -7,8 +7,9 @@
 #
 # The image bakes in: the worker + its embedded haybarn DuckDB, the adbc_scanner
 # community extension (pre-installed at build so first ATTACH needs no network), and the
-# PostgreSQL + SQLite ADBC drivers (installed via `dbc` into the standard manifest path).
-# Add more drivers with `dbc install <name>` in a derived image.
+# PostgreSQL + SQLite + MySQL ADBC drivers (installed via `dbc` into the standard manifest
+# path). `dbc` is kept in the image, so more drivers (mssql, trino, flightsql, …) can be
+# added with `dbc install <name>` in a derived image (or at runtime for a live container).
 # syntax=docker/dockerfile:1
 FROM python:3.13-slim
 
@@ -54,6 +55,7 @@ RUN uv export --frozen --no-dev --no-emit-project --extra serve -o /tmp/requirem
 RUN curl -LsSf https://dbc.columnar.tech/install.sh | sh \
     && /root/.local/bin/dbc install postgresql \
     && /root/.local/bin/dbc install sqlite \
+    && /root/.local/bin/dbc install mysql \
     && python -c "import haybarn; c=haybarn.connect(config={'allow_unsigned_extensions':'true'}); c.execute('INSTALL adbc_scanner FROM community'); c.execute('LOAD adbc_scanner'); print('adbc_scanner ready')"
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

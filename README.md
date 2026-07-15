@@ -89,10 +89,15 @@ Install them once with [`dbc`](https://columnar.tech/dbc/):
 curl -LsSf https://dbc.columnar.tech/install.sh | sh
 dbc install postgresql
 dbc install sqlite
+dbc install mysql
 ```
 
-PostgreSQL and SQLite are exercised end-to-end here; other ADBC drivers (MySQL, Trino,
-Snowflake, Flight SQL, …) generally work too — the connector is driver-agnostic.
+`dbc` also offers `mssql` (SQL Server), `trino`, `flightsql`, `datafusion`, and more.
+**PostgreSQL, SQLite, and MySQL are exercised end-to-end here — including over the HTTP
+transport** (see `tests/test_http_transport.py`); other ADBC drivers (Trino, Snowflake,
+Flight SQL, …) work the same way — the connector is driver-agnostic, and the VGI transport is
+identical regardless of which driver the worker loads. (MySQL surfaces its database as the
+`main` schema and takes a Go-style DSN, e.g. `driver 'mysql', uri 'user:pw@tcp(host:3306)/db'`.)
 
 > **PostgreSQL schemas.** Some drivers scope table discovery to the connection's default
 > search path — the PostgreSQL driver lists only the `search_path` schemas (default:
@@ -188,8 +193,9 @@ docker run --rm -p 8000:8000 ghcr.io/query-farm/vgi-adbc      # HTTP (default): 
 docker run --rm -i ghcr.io/query-farm/vgi-adbc stdio          # stdio worker
 ```
 
-The image bakes in the `adbc_scanner` community extension and the PostgreSQL + SQLite ADBC
-drivers (via `dbc`); add more drivers with `dbc install <name>` in a derived image.
+The image bakes in the `adbc_scanner` community extension and the PostgreSQL + SQLite +
+MySQL ADBC drivers (via `dbc`). `dbc` is kept in the image, so more drivers (`mssql`,
+`trino`, `flightsql`, …) can be added with `dbc install <name>` in a derived image.
 
 ## Development
 

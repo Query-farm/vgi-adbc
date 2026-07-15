@@ -78,20 +78,46 @@ jobs:
 
   # HTTP-transport E2E: serve the worker over HTTP and drive it with real DuckDB clients over
   # an http:// ATTACH. The pytest suite (tests/test_http_transport.py) asserts schema/scan/
-  # pushdown/adbc_query/read-only across the HTTP transport from a Python haybarn client; the
-  # bash E2E adds a haybarn-cli check. Both use the single-waitress process so the sticky ADBC
-  # session lives in-process. (The main `test` job skips these — it has no `serve` extra.)
+  # pushdown/adbc_query/read-only across the HTTP transport — over SQLite and, against the
+  # postgres + mysql service containers, over PostgreSQL and MySQL (proving the driver-agnostic
+  # "arbitrary server over HTTP" path). The bash E2E adds a haybarn-cli SQLite check. All use
+  # the single-waitress process so the sticky ADBC session lives in-process. (The main `test`
+  # job skips these — it has no `serve` extra.)
   http-e2e:
     name: HTTP transport e2e
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: pw
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: pw
+          MYSQL_DATABASE: app
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -uroot -ppw" --health-interval 5s --health-timeout 5s --health-retries 15
+    env:
+      VGI_ADBC_TEST_PG: postgresql://postgres:pw@127.0.0.1:5432/app
+      VGI_ADBC_TEST_MYSQL: root:pw@tcp(127.0.0.1:3306)/app
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Install worker environment (with HTTP serving)
         run: uv sync --extra dev --extra serve
+      - name: Install DB clients (psql + mysql, to seed the remotes)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client default-mysql-client
       - name: Provision ADBC drivers + adbc_scanner
         run: bash ci/provision-adbc.sh
+      - name: Install extra ADBC drivers (postgresql, mysql)
+        run: "$HOME/.local/bin/dbc install postgresql && $HOME/.local/bin/dbc install mysql"
       - name: Install the vgi community extension (client side)
         run: |
           for i in 1 2 3 4 5; do
@@ -99,7 +125,7 @@ jobs:
             echo "==> vgi install attempt $i failed; retrying in 5s"; sleep 5
           done
           exit 1
-      - name: HTTP transport pytest suite
+      - name: HTTP transport pytest suite (SQLite + PostgreSQL + MySQL)
         run: uv run pytest -q tests/test_http_transport.py
       - name: Run the HTTP E2E
         run: ./run_http_tests.sh

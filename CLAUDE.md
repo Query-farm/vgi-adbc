@@ -192,6 +192,11 @@ stay enforced.
 - `tests/` — pytest: pure-logic (SQL quoting, option resolution, alignment, scan registry)
   always run; engine tests exercise real SQLite over ADBC and skip if `adbc_scanner` can't
   load; `tests/test_engine_postgres.py` runs only when `VGI_ADBC_TEST_PG` holds a DSN.
+  `tests/test_http_transport.py` drives the worker over `http://`: SQLite always, plus
+  **PostgreSQL and MySQL** when `VGI_ADBC_TEST_PG` / `VGI_ADBC_TEST_MYSQL` are set (the CI
+  `http-e2e` job runs postgres + mysql service containers and sets both — proving the
+  driver-agnostic "arbitrary server over HTTP" path). MySQL's DSN is the ADBC Go form
+  (`user:pw@tcp(host:port)/db`) and it surfaces the database as the `main` schema.
 - `run_benchmarks.sh` + `bench/` — end-to-end benchmarks (a real haybarn+vgi client attaches
   the worker) over **both** transports against SQLite (always) and PostgreSQL (throwaway
   Docker `postgres:16`, auto-skipped if Docker is absent). Writes `bench/results/{md,json}`.
