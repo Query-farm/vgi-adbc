@@ -197,6 +197,41 @@ def test_http_adbc_query_passthrough(client) -> None:  # noqa: ANN001
     assert pk[0] == "id"
 
 
+def test_http_concurrent_clients(http_worker: tuple[str, str]) -> None:
+    # Many clients attaching + querying the HTTP worker concurrently — exercises the waitress
+    # thread pool and multiple simultaneous sticky sessions. Assert every query is correct and
+    # no thread errored.
+    import threading
+
+    location, sqlite_path = http_worker
+    _vgi_client().close()  # gate: skips here if haybarn/vgi is unavailable
+
+    errors: list[str] = []
+    results: list[int] = []
+
+    def run() -> None:
+        try:
+            import haybarn
+
+            con = haybarn.connect(config={"allow_unsigned_extensions": "true"})
+            con.execute("LOAD vgi")
+            con.execute(f"ATTACH 'adbc' AS db (TYPE vgi, LOCATION '{location}', driver 'sqlite', uri '{sqlite_path}')")
+            for _ in range(5):
+                results.append(con.execute("SELECT count(*) FROM db.main.employees WHERE salary > 50000").fetchone()[0])
+            con.execute("DETACH db")
+            con.close()
+        except Exception as exc:  # noqa: BLE001 - collect any failure across threads
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=run) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [], errors
+    assert results == [4] * 30  # 6 clients x 5 queries; 4 employees earn > 50000
+
+
 def test_http_readonly_blocks_writes_and_stays_usable(client) -> None:  # noqa: ANN001
     # The read-only seal rejects a mutating passthrough over HTTP...
     with pytest.raises(Exception):  # noqa: B017, PT011 - worker surfaces an IO/InvalidInput error

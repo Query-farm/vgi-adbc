@@ -58,6 +58,11 @@ RUN curl -LsSf https://dbc.columnar.tech/install.sh | sh \
     && /root/.local/bin/dbc install mysql \
     && python -c "import haybarn; c=haybarn.connect(config={'allow_unsigned_extensions':'true'}); c.execute('INSTALL adbc_scanner FROM community'); c.execute('LOAD adbc_scanner'); print('adbc_scanner ready')"
 
+# Build-time attach smoke: prove the baked adbc_scanner + SQLite driver actually ATTACH and
+# scan, so a broken driver/extension bake fails the build (not the first user's ATTACH).
+COPY ci/attach_smoke.py /tmp/attach_smoke.py
+RUN python /tmp/attach_smoke.py && rm /tmp/attach_smoke.py
+
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

@@ -88,8 +88,9 @@ quote-style = "double"
 [tool.ruff.lint.per-file-ignores]
 # Tests don't need the docstring family.
 "tests/*" = ["D"]
-# Benchmark scripts are internal tooling, not shipped API: skip the docstring family.
+# Benchmark + CI scripts are internal tooling, not shipped API: skip the docstring family.
 "bench/*" = ["D"]
+"ci/*" = ["D"]
 
 [tool.mypy]
 python_version = "3.13"

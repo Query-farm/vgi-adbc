@@ -8,6 +8,11 @@ on:
     branches: [main]
     paths-ignore: ['README.md']
   workflow_dispatch:
+  # Nightly run: the e2e / http-e2e / lint jobs install the *live* community `vgi` extension,
+  # so this catches when it drifts ahead of the pinned vgi-python (the "out-of-date Arrow
+  # schema" mismatch) even with no code change — signalling a needed vgi-python bump.
+  schedule:
+    - cron: '17 6 * * *'
   # Allow release.yml / docker-publish.yml to gate on this exact suite.
   workflow_call:
 
