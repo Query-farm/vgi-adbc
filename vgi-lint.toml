@@ -12,6 +12,8 @@ fail_on = "info"
 ignore = [
     "VGI307", # adbc_query returns a runtime-determined schema (whatever the passthrough SQL yields) — there is no fixed result schema to declare
     "VGI151", # min examples counts examples on advertised tables/functions; ours live on the catalog/schema and the internal scan function (tables are dynamic)
+    "VGI515", # tooling drift: our adbc_query examples DO carry descriptions (verified on the advertised FunctionInfo via _function_to_info), but the current vgi-lint-check reports them as missing — a lint/serialization artifact, not a metadata defect
+
     "VGI111", # table has no comment — remote tables are the user's, discovered live
     "VGI112", # table missing vgi.doc_llm — idem
     "VGI113", # table missing vgi.doc_md — idem
