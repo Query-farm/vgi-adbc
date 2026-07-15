@@ -29,7 +29,10 @@ classifiers = [
     "Topic :: Database :: Front-Ends",
 ]
 dependencies = [
-    "vgi-python>=0.14.0",
+    # 0.16.0 is the first vgi-python whose catalog RPC schema matches the current
+    # community `vgi` client extension (0.15.0 predates it — an attach would fail with
+    # an "out-of-date Apache Arrow schema" mismatch).
+    "vgi-python>=0.16.0",
     "pyarrow>=17",
     # haybarn is a duckdb-python drop-in (v1.5.4) whose community extension
     # repository serves a recent adbc_scanner build. The worker runs its ADBC
@@ -42,7 +45,7 @@ dependencies = [
 # HTTP-serving extra — installed by the published Docker image (`.[serve]`) so the
 # container can serve the worker over HTTP (/health + VGI RPC) via `vgi-serve --http`.
 # A plain stdio install stays lean (DuckDB owns the pipe, no HTTP server needed).
-serve = ["vgi-python[http]>=0.14.0"]
+serve = ["vgi-python[http]>=0.16.0"]
 dev = [
     "mypy",
     "pyarrow-stubs",
