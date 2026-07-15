@@ -163,19 +163,20 @@ reconnect for connections with *no* connection-local state — is deferred futur
 
 ## Tuning & resource limits
 
-All of these are optional environment variables read by the worker; the defaults preserve
-the simple, unbounded v1 behavior.
+All of these are optional environment variables read by the worker.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `VGI_ADBC_SESSION_IDLE_SECONDS` | `0` (off) | Evict an attachment idle longer than this. Off by default: sessions are strictly sticky, so an evicted one is a permanent loss (the client must re-`ATTACH`). Enable it (e.g. `3600`) to reclaim connections from clients that never `DETACH`. |
+| `VGI_ADBC_SESSION_IDLE_SECONDS` | `3600` (1h) | Evict an attachment idle longer than this, so a crashed/never-`DETACH`ing client can't leak a session (a whole DuckDB instance + ADBC connection) forever. Any query resets the timer, so only a *dormant* attach is evicted; the client re-`ATTACH`es on next use. `0` disables. |
 | `VGI_ADBC_MAX_SESSIONS` | `0` (∞) | Refuse a new `ATTACH` past this many live attachments (idle ones are reaped first). |
-| `VGI_ADBC_SCAN_IDLE_SECONDS` | `0` (off) | Reap an in-flight scan reader not read within this window (frees a cursor a crashed/disconnected client left pinned). **Set this above your slowest client's inter-batch gap** — a live-but-slow scan reaped mid-stream would restart. |
+| `VGI_ADBC_SCAN_IDLE_SECONDS` | `300` (5m) | Reap an in-flight scan reader not read within this window (frees a cursor an abandoned/disconnected scan left pinned). Well above any real inter-batch gap, so a live scan is never reaped mid-stream (that would raise `ScanInterruptedError`). `0` disables. |
 | `VGI_ADBC_MAX_SCANS` | `0` (∞) | Cap concurrent scan readers; the least-recently-used are evicted past it. |
 | `VGI_ADBC_CARDINALITY` | `estimate` | `estimate` (cheap PostgreSQL `pg_class.reltuples`, else a bounded count), `count` (always exact `count(*)`), or `off`. |
 | `VGI_ADBC_CARDINALITY_MAX_COUNT` | `0` (∞) | When counting for cardinality, count at most this many rows and return no estimate past the cap — so planning never full-scans a huge remote table. |
-| `VGI_ADBC_QUERY_TIMEOUT_SECONDS` | `0` (off) | Per-statement timeout on the `adbc_query` raw handle (PostgreSQL `statement_timeout`). Bound scan-path queries with the server's `statement_timeout` on the connecting role. |
+| `VGI_ADBC_QUERY_TIMEOUT_SECONDS` | `0` (off) | Per-statement timeout on the **`adbc_query` raw handle** (PostgreSQL `statement_timeout`, applied via `adbc_execute`). See the note below on why the **scan path** can't be bounded the same way. |
 | `VGI_ADBC_HTTP_THREADS` | waitress default (4) | HTTP worker thread pool size. Sticky, stateful sessions make the default a real ceiling — size it to expected concurrency. |
+| `VGI_ADBC_METRICS_PORT` | — | Serve Prometheus metrics on this port (see *Observability*). Unset = disabled. |
+| `VGI_ADBC_METRICS_HOST` | `0.0.0.0` | Bind address for the metrics endpoint. |
 | `VGI_ADBC_EXTENSION_PATH` | — | Load a local `adbc_scanner.duckdb_extension` instead of installing from the community repository. |
 
 > **PostgreSQL filter pushdown.** With the current `adbc_scanner` + PostgreSQL driver, a
@@ -183,6 +184,26 @@ the simple, unbounded v1 behavior.
 > isolation; end-to-end through the DuckDB client, results are correct (DuckDB re-applies
 > the predicate). Reach PostgreSQL with native SQL through `adbc_query(...)` if you need a
 > pushed-down filter you can rely on at the source.
+
+> **Query timeouts.** The worker enforces `VGI_ADBC_QUERY_TIMEOUT_SECONDS` on the
+> **`adbc_query` raw handle** only. The **scan path** cannot be bounded at the worker with
+> the current PostgreSQL driver: it rejects connection-option injection (`options` /
+> `?options=`), `adbc_scanner` owns the scan connection so the worker can't `SET` on it, and
+> a server-side `statement_timeout` was **not** honored on the scan connection in testing.
+> Bound long scans with infrastructure controls (request/proxy timeouts, connection caps,
+> monitoring) rather than a per-query setting.
+
+## Observability
+
+- **Prometheus metrics.** Set `VGI_ADBC_METRICS_PORT` to expose `/metrics` (and `/healthz`)
+  on a background thread. Counters (`vgi_adbc_attaches_total`, `detaches_total`,
+  `attach_errors_total`, `sessions_evicted_total`, `scans_opened_total`, `scans_reaped_total`,
+  `scans_evicted_total`, `cardinality_errors_total`, `refresh_failures_total`) and gauges
+  (`vgi_adbc_active_sessions`, `vgi_adbc_active_scans`) come from the engine's live stats.
+- **Structured logs.** The worker logs a rate-limited `adbc.stats key=value …` snapshot line
+  (the same counters/gauges) and per-RPC access logs — scrape either.
+- **Tracing / OTel.** The underlying VGI worker supports OpenTelemetry; configure it via the
+  standard `OTEL_*` environment variables to export request traces to a collector.
 
 ## Run as a container
 

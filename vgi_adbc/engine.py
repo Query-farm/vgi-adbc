@@ -31,6 +31,7 @@ import threading
 import time
 import uuid
 import warnings
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -227,6 +228,41 @@ class AdbcSession:
     query_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
+class EngineStats:
+    """Thread-safe lifecycle counters for the engine (the source for logs + /metrics).
+
+    Monotonic counters (``attaches``, ``detaches``, ``attach_errors``, ``sessions_evicted``,
+    ``scans_opened``, ``scans_reaped``, ``scans_evicted``, ``cardinality_errors``,
+    ``refresh_failures``) plus the live gauges ``active_sessions`` / ``active_scans`` supplied
+    at snapshot time. See :mod:`vgi_adbc.metrics` for the Prometheus rendering.
+    """
+
+    def __init__(self) -> None:
+        """Initialize empty counters."""
+        self._lock = threading.Lock()
+        self._counters: Counter[str] = Counter()
+
+    def incr(self, name: str, n: int = 1) -> None:
+        """Increment a monotonic counter (no-op for n<=0)."""
+        if n <= 0:
+            return
+        with self._lock:
+            self._counters[name] += n
+
+    def snapshot(self, *, active_sessions: int, active_scans: int) -> dict[str, int]:
+        """Return a snapshot: all counters plus the two live gauges."""
+        with self._lock:
+            snap = dict(self._counters)
+        snap["active_sessions"] = active_sessions
+        snap["active_scans"] = active_scans
+        return snap
+
+
+def _format_stats(snapshot: dict[str, int]) -> str:
+    """Render a stats snapshot as a stable ``key=value`` string for logging."""
+    return " ".join(f"{k}={snapshot[k]}" for k in sorted(snapshot))
+
+
 class AdbcEngine:
     """Process-local registry of sticky ADBC attachments over an embedded DuckDB."""
 
@@ -274,6 +310,7 @@ class AdbcEngine:
         self._registry_lock = threading.Lock()
         self._install_lock = threading.Lock()
         self._installed = False
+        self.stats = EngineStats()
         # Resource-lifecycle bounds (B2/B3).
         self._session_idle = max(0.0, session_idle_seconds)
         self._scan_idle = max(0.0, scan_idle_seconds)
@@ -379,9 +416,14 @@ class AdbcEngine:
         self.reap()
         self._enforce_session_limit()
         session_id = uuid.uuid4().bytes
-        session = self._build_session(session_id, target)
+        try:
+            session = self._build_session(session_id, target)
+        except Exception:
+            self.stats.incr("attach_errors")
+            raise
         with self._registry_lock:
             self._sessions[session_id] = session
+        self.stats.incr("attaches")
         logger.info(
             "adbc.attach driver=%s read_only=%s refresh_seconds=%s sessions=%s",
             target.driver,
@@ -487,11 +529,22 @@ class AdbcEngine:
                 stale = [sid for sid, s in self._sessions.items() if (now - s.last_used) > self._session_idle]
             for sid in stale:
                 logger.info("adbc.session_evict idle=%s", self._session_idle)
+                self.stats.incr("sessions_evicted")
                 self.detach(sid)
         if self._scan_idle > 0:
             from vgi_adbc.functions import reap_idle_scans
 
-            reap_idle_scans(self._scan_idle)
+            self.stats.incr("scans_reaped", reap_idle_scans(self._scan_idle))
+        # Emit a periodic stats snapshot (rate-limited by the reap interval) for log scraping.
+        logger.info("adbc.stats %s", _format_stats(self.stats_snapshot()))
+
+    def stats_snapshot(self) -> dict[str, int]:
+        """Return the engine's lifecycle counters plus live gauges (for logs / metrics)."""
+        from vgi_adbc.functions import active_scan_count
+
+        with self._registry_lock:
+            active_sessions = len(self._sessions)
+        return self.stats.snapshot(active_sessions=active_sessions, active_scans=active_scan_count())
 
     def maybe_refresh(self, session: AdbcSession) -> None:
         """Re-read the remote catalog if the session's refresh interval has elapsed.
@@ -514,6 +567,7 @@ class AdbcEngine:
             # Advance the clock so a remote outage doesn't retry on every catalog_version
             # call (a refresh storm that would fail otherwise-cacheable queries).
             session.last_refresh = time.monotonic()
+            self.stats.incr("refresh_failures")
             logger.warning("adbc.refresh failed; serving cached catalog", exc_info=True)
 
     def refresh(self, session: AdbcSession) -> int:
@@ -609,6 +663,7 @@ class AdbcEngine:
             _release_session_scans(session_id)
             with session.lifecycle_lock:
                 _close_session(session)
+            self.stats.incr("detaches")
             logger.info("adbc.detach driver=%s", session.target.driver)
 
     def close_all(self) -> None:
@@ -786,6 +841,7 @@ class AdbcEngine:
                 return None if counted > cap else counted
             rows = self._fetchall(session, f"SELECT count(*) FROM {rel}")
         except Exception:  # noqa: BLE001 - cardinality is best-effort
+            self.stats.incr("cardinality_errors")
             logger.debug("could not count %s.%s for cardinality", schema, table, exc_info=True)
             return None
         if not rows or rows[0][0] is None:
@@ -1144,6 +1200,10 @@ def get_engine() -> AdbcEngine:
                 # Release ADBC connections during interpreter shutdown, before C++
                 # static destructors run — see AdbcEngine.close_all.
                 atexit.register(_engine.close_all)
+                # Opt-in Prometheus /metrics endpoint (VGI_ADBC_METRICS_PORT); no-op otherwise.
+                from vgi_adbc.metrics import maybe_start_metrics_server
+
+                maybe_start_metrics_server(_engine.stats_snapshot)
     return _engine
 
 
@@ -1175,12 +1235,16 @@ def _engine_config_from_env() -> dict[str, Any]:
     if mode not in ("estimate", "count", "off"):
         logger.warning("ignoring unknown VGI_ADBC_CARDINALITY=%r (using 'estimate')", mode)
         mode = "estimate"
-    # Idle session eviction is off by default: sessions are strictly sticky (no reconnect), so
-    # evicting one is a permanent loss — enable it only when you accept re-ATTACH on next use.
+    # Resource-safe defaults so a crashed/disconnected client can't leak a session (a whole
+    # DuckDB instance + ADBC connection) or an abandoned scan reader forever:
+    #  - session idle 1h: any query resets the timer (get() stamps last_used), so only a truly
+    #    dormant attach is evicted; the client transparently re-ATTACHes on next use.
+    #  - scan idle 5m: far longer than any real inter-batch gap, so a live scan is never reaped
+    #    mid-stream (a reaped reader would raise ScanInterruptedError). Set either to 0 to disable.
     return {
         "extension_path": os.environ.get("VGI_ADBC_EXTENSION_PATH") or None,
-        "session_idle_seconds": _f("VGI_ADBC_SESSION_IDLE_SECONDS", 0.0),
-        "scan_idle_seconds": _f("VGI_ADBC_SCAN_IDLE_SECONDS", 0.0),
+        "session_idle_seconds": _f("VGI_ADBC_SESSION_IDLE_SECONDS", 3600.0),
+        "scan_idle_seconds": _f("VGI_ADBC_SCAN_IDLE_SECONDS", 300.0),
         "max_sessions": _i("VGI_ADBC_MAX_SESSIONS", 0),
         "max_scans": _i("VGI_ADBC_MAX_SCANS", 0),
         "reap_interval_seconds": _f("VGI_ADBC_REAP_INTERVAL_SECONDS", 60.0),

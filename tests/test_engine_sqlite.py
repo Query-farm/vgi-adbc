@@ -424,6 +424,40 @@ def test_resolve_is_strictly_sticky(engine: AdbcEngine, sqlite_db: Path) -> None
         engine.resolve(session_id)
 
 
+def test_readonly_false_write_teardown_is_clean(sqlite_db: Path) -> None:
+    # Regression guard: writing through a NON-read-only adbc_query handle and then tearing the
+    # session down used to be able to abort DuckDB at teardown (a throwing destructor). It must
+    # be clean now — a hard C++ abort would kill the whole test process, so simply completing
+    # here is the assertion. (Writes are out of v1 scope, but this hardens the future path.)
+    import contextlib
+
+    from vgi_adbc.engine import AdbcTarget
+
+    eng = _fresh_engine()  # skips if adbc_scanner can't load
+    sid = eng.attach(AdbcTarget(driver="sqlite", location=str(sqlite_db), read_only=False))
+    session = eng.get(sid)
+    for stmt in ("INSERT INTO employees VALUES (99, 'x', 'x', 1, 1)", "UPDATE employees SET dept='z' WHERE id=1"):
+        with contextlib.suppress(Exception):
+            eng.raw_query(session, stmt).read_all()
+    eng.detach(sid)
+    eng.close_all()  # exercises the shutdown drain path too
+
+
+def test_stats_track_attach_detach(engine: AdbcEngine, sqlite_db: Path) -> None:
+    from vgi_adbc.engine import AdbcTarget
+
+    sid1 = engine.attach(AdbcTarget(driver="sqlite", location=str(sqlite_db)))
+    sid2 = engine.attach(AdbcTarget(driver="sqlite", location=str(sqlite_db)))
+    snap = engine.stats_snapshot()
+    assert snap["attaches"] == 2
+    assert snap["active_sessions"] == 2
+    engine.detach(sid1)
+    engine.detach(sid2)
+    after = engine.stats_snapshot()
+    assert after["detaches"] == 2
+    assert after["active_sessions"] == 0
+
+
 def test_missing_session_raises(engine: AdbcEngine) -> None:
     try:
         engine.get(b"\x00" * 16)

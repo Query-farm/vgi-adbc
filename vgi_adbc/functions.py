@@ -115,6 +115,7 @@ def _register_reader(token: bytes, reader: Any, session_id: bytes) -> None:
     """Register a new in-flight reader, then enforce the process scan cap."""
     with _active_lock:
         _active_scans[token] = _ScanEntry(reader=reader, session_id=session_id, last_used=time.monotonic())
+    get_engine().stats.incr("scans_opened")
     _enforce_scan_limit()
 
 
@@ -195,6 +196,7 @@ def _enforce_scan_limit() -> None:
         entries = [_active_scans.pop(token) for token, _ in ordered[:overflow]]
     for entry in entries:
         _close_reader(entry.reader)
+    get_engine().stats.incr("scans_evicted", len(entries))
     logger.info("adbc.scan_evict max=%s evicted=%s", max_scans, len(entries))
 
 
