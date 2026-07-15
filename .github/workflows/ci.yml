@@ -43,6 +43,8 @@ jobs:
         run: uv run ruff check .
       - name: Type check (mypy)
         run: uv run mypy vgi_adbc/
+      - name: Provision ADBC drivers + adbc_scanner
+        run: bash ci/provision-adbc.sh
       - name: Tests
         run: uv run pytest -q
 
@@ -58,12 +60,19 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Install worker environment
         run: uv sync --extra dev
+      - name: Provision ADBC drivers + adbc_scanner
+        run: bash ci/provision-adbc.sh
       - name: Install the haybarn unittest runner
         run: |
           uv tool install haybarn-unittest
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Install the vgi community extension
-        run: echo "INSTALL vgi FROM community;" | uvx haybarn-cli
+      - name: Install the vgi community extension (client side)
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "INSTALL vgi FROM community;" | uvx haybarn-cli && exit 0
+            echo "==> vgi install attempt $i failed; retrying in 5s"; sleep 5
+          done
+          exit 1
       - name: Run SQLLogic suite against the worker
         run: ./run_tests.sh
 
@@ -81,6 +90,15 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Install worker environment (with HTTP serving)
         run: uv sync --extra dev --extra serve
+      - name: Provision ADBC drivers + adbc_scanner
+        run: bash ci/provision-adbc.sh
+      - name: Install the vgi community extension (client side)
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "INSTALL vgi FROM community;" | uvx haybarn-cli && exit 0
+            echo "==> vgi install attempt $i failed; retrying in 5s"; sleep 5
+          done
+          exit 1
       - name: HTTP transport pytest suite
         run: uv run pytest -q tests/test_http_transport.py
       - name: Run the HTTP E2E
@@ -98,6 +116,8 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Install worker environment
         run: uv sync --extra dev
+      - name: Provision ADBC drivers + adbc_scanner
+        run: bash ci/provision-adbc.sh
       - name: Build the SQLite fixture
         run: uv run python test/make_fixture.py "${{ runner.temp }}/lint_fixture.sqlite"
       - name: vgi-lint

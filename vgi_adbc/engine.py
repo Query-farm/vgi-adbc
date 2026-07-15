@@ -103,14 +103,21 @@ ConnectFn = Callable[..., Any]
 
 
 def _default_connect() -> ConnectFn:
-    """Resolve the DuckDB connect function, preferring haybarn.
+    """Resolve the DuckDB connect function — **haybarn**, not stock DuckDB.
+
+    The ``vgi`` client extension and the ``adbc_scanner`` extension this worker loads are
+    served by *haybarn's* community extension repository, not stock DuckDB's — so a stock
+    ``duckdb`` build would fail to resolve them (different version + different repo). haybarn
+    is therefore required. Set ``VGI_ADBC_ALLOW_DUCKDB=1`` to opt into a stock ``duckdb``
+    connection anyway (only sensible when you supply a compatible extension locally via
+    ``VGI_ADBC_EXTENSION_PATH``).
 
     Returns:
-        ``haybarn.connect`` when available (recent DuckDB + recent adbc_scanner),
-        otherwise ``duckdb.connect`` as a fallback.
+        ``haybarn.connect`` (or ``duckdb.connect`` under the explicit opt-out).
 
     Raises:
-        RuntimeError: If neither ``haybarn`` nor ``duckdb`` can be imported.
+        RuntimeError: If haybarn is not importable (and the duckdb opt-out is not set / also
+            unavailable).
 
     """
     try:
@@ -119,13 +126,23 @@ def _default_connect() -> ConnectFn:
         return haybarn.connect
     except ImportError:
         pass
-    try:
-        import duckdb
+    import os
 
-        return duckdb.connect  # type: ignore[no-any-return]
-    except ImportError as exc:  # pragma: no cover - environment misconfiguration
-        msg = "Neither 'haybarn' nor 'duckdb' is importable; install vgi-adbc's dependencies."
-        raise RuntimeError(msg) from exc
+    if os.environ.get("VGI_ADBC_ALLOW_DUCKDB", "").strip().lower() in ("1", "true", "yes"):
+        try:
+            import duckdb
+
+            logger.warning("haybarn not importable; using stock duckdb (VGI_ADBC_ALLOW_DUCKDB set)")
+            return duckdb.connect  # type: ignore[no-any-return]
+        except ImportError:
+            pass
+    msg = (
+        "haybarn is required but not importable. This worker loads the vgi + adbc_scanner "
+        "extensions from haybarn's community repository, which stock DuckDB cannot resolve. "
+        "Install the project's dependencies (they pin haybarn). To force a stock duckdb "
+        "connection anyway, set VGI_ADBC_ALLOW_DUCKDB=1 (and supply VGI_ADBC_EXTENSION_PATH)."
+    )
+    raise RuntimeError(msg)
 
 
 class SessionNotFoundError(RuntimeError):
