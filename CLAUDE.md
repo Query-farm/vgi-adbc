@@ -118,28 +118,25 @@ Bounds are opportunistic and off by default (defaults preserve v1's unbounded be
 - **Streaming state.** A live `RecordBatchReader` can't serialize into an HTTP state token.
   Keep it in the process-local `_active_scans` dict keyed by a token stored in the
   (serializable) `_ScanState`. Strict sticky sessions keep every call on this process.
-- **Process-local state + a worker-subprocess pool → stateless reconnect (not just HTTP
-  affinity).** The ADBC connection + `_sessions`/`_active_scans` live in one worker
-  **process**'s memory, and the VGI DuckDB extension runs a **pool of worker subprocesses even
-  over stdio** (verified: distinct PIDs). Normally a client's calls reuse one process, but when
-  a worker RPC returns an **error**, the extension routes the *next* call to a **freshly-spawned**
-  process with an empty registry (verified: 12+ sequential *normal* queries stay on one PID; a
-  single failing `adbc_query` — even a benign "table not found" — shifts following calls to new
-  PIDs). So the trigger is a worker error, **not** session length. **The fix (implemented):**
-  `attach_opaque_data` carries `session_id(16) || json(target)` (see
-  `encode_attach_identity`/`decode_attach_identity`); on a registry miss `AdbcEngine.resolve`
-  **rebuilds the session from the sealed target** (`_reconnect_session`), so an attachment
-  survives a process hop transparently. The framework AEAD-seals the token per-principal on
-  HTTP (creds safe); on stdio it's plaintext on the local pipe the client already owns. Disable
-  with `VGI_ADBC_RECONNECT=0` (reverts to raise-on-miss). Reconnect also makes idle eviction
-  safe by default (`VGI_ADBC_SESSION_IDLE_SECONDS=900`) — an evicted session just reconnects.
-- **Streaming can't reconnect — it fails loudly, never restarts.** A live `RecordBatchReader`
-  is a non-serializable cursor position; a scan's batches must all land on the process holding
-  it. If a `process` call for an *already-opened* scan hits a fresh process (mid-scan hop),
-  `_ScanState.opened` is True but the reader is gone → raise `ScanInterruptedError` (re-run the
-  query) rather than re-open from row 0 and duplicate rows. HTTP still sets the `vgi_adbc_sticky`
-  cookie (`catalog_version` asserts it) so affinity is preferred; reconnect is the safety net,
-  not a substitute for affinity during a scan.
+- **Strictly sticky — no reconnect (deliberate).** The ADBC connection + `_sessions`/
+  `_active_scans` live in one worker **process**'s memory, and the VGI DuckDB extension runs a
+  **pool of worker subprocesses even over stdio** (verified: distinct PIDs). Normally a
+  client's calls reuse one process, but when a worker RPC returns an **error**, the extension
+  routes the *next* call to a **freshly-spawned** process with an empty registry (verified:
+  12+ sequential *normal* queries stay on one PID; a single failing `adbc_query` shifts
+  following calls to new PIDs). `AdbcEngine.resolve` (used by catalog + functions) does a
+  strict registry lookup and raises `SessionNotFoundError` on a miss — it does **not** rebuild
+  the connection. This is a correctness decision: a rebuilt connection is a *fresh* one that
+  would silently drop an open transaction, temp tables, or session settings — so a lost
+  session fails loudly and the client re-`ATTACH`es. (`attach_opaque_data` is just the 16-byte
+  session id; no target/credentials ride in it. Stateless reconnect for connections with *no*
+  connection-local state is deferred.)
+- **Streaming likewise never silently restarts.** A live `RecordBatchReader` is a
+  non-serializable cursor position. If a `process` call for an *already-opened* scan finds no
+  reader in this process — the reader was reaped as idle, or a hop landed the batch elsewhere —
+  `_ScanState.opened` is True → raise `ScanInterruptedError` (re-run the query) rather than
+  re-open from row 0 and duplicate rows. HTTP sets the `vgi_adbc_sticky` cookie
+  (`catalog_version` asserts it) so a load balancer can pin affinity.
 - **haybarn, not duckdb.** `engine.py` imports `haybarn` (a duckdb-python drop-in) so the
   embedded DuckDB is recent enough to load a recent `adbc_scanner`. `VGI_ADBC_EXTENSION_PATH`
   loads a local `.duckdb_extension` instead of the community build.
@@ -215,9 +212,10 @@ uvx --prerelease allow --from vgi-lint-check vgi-lint lint bin/vgi-adbc-worker \
 ## Scope (v1)
 
 Read-only: attach + introspect + scan with projection & filter pushdown, cardinality
-estimates, catalog refresh, and the `adbc_query` raw-SQL passthrough. Sessions survive
-worker-pool process hops via **stateless reconnect** (the sealed target rides in
-`attach_opaque_data`); a live streaming scan still needs process affinity for its duration
-and fails loudly (`ScanInterruptedError`) rather than restarting if it hops. **Deferred:**
-writes, transactions, and bulk insert. PostgreSQL needs a reachable server for its E2E;
-SQLite runs anywhere (its ADBC driver embeds SQLite).
+estimates, catalog refresh, and the `adbc_query` raw-SQL passthrough. Sessions are **strictly
+sticky** — a call that misses the owning process fails loudly (`SessionNotFoundError`), never
+reconnecting, because a fresh connection would drop connection-local state (transactions,
+temp tables); a live scan that hops likewise fails with `ScanInterruptedError` rather than
+restarting. **Deferred:** writes, transactions, bulk insert, and stateless read scale-out
+(pooled reconnect for state-free connections). PostgreSQL needs a reachable server for its
+E2E; SQLite runs anywhere (its ADBC driver embeds SQLite).

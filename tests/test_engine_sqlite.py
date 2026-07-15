@@ -411,36 +411,17 @@ def test_detach_releases_session_scans(engine: AdbcEngine, sqlite_db: Path) -> N
     assert reader.closed is True
 
 
-def test_resolve_reconnects_after_process_hop(engine: AdbcEngine, sqlite_db: Path) -> None:
-    # Simulate a worker-pool process hop: the session is gone from this process's registry,
-    # but the attach identity (with the sealed target) lets resolve() rebuild it transparently.
-    from vgi_adbc.engine import AdbcTarget, encode_attach_identity
+def test_resolve_is_strictly_sticky(engine: AdbcEngine, sqlite_db: Path) -> None:
+    # Sessions are strictly sticky: if the session is gone from this process (a worker-pool
+    # hop or restart), resolve() raises rather than silently rebuilding a fresh connection
+    # (which would lose transactions / temp tables). The client must re-ATTACH.
+    from vgi_adbc.engine import AdbcTarget, SessionNotFoundError
 
-    target = AdbcTarget(driver="sqlite", location=str(sqlite_db))
-    session_id = engine.attach(target)
-    identity = encode_attach_identity(session_id, target)
-    # Drop the session as if this were a fresh worker process.
-    engine._sessions.pop(session_id)
-    assert session_id not in engine._sessions
-
-    session = engine.resolve(identity)
-    assert session.session_id == session_id  # rebuilt under the same identity
-    # ...and it actually works: a scan streams from the reconnected session.
-    rows = engine.scan(session, "main", "employees", None, "", []).read_all().num_rows
-    assert rows == 5
-    engine.detach(session_id)
-
-
-def test_resolve_no_reconnect_raises(sqlite_db: Path) -> None:
-    from vgi_adbc.engine import AdbcTarget, SessionNotFoundError, encode_attach_identity
-
-    eng = _fresh_engine(reconnect=False)
-    target = AdbcTarget(driver="sqlite", location=str(sqlite_db))
-    session_id = eng.attach(target)
-    identity = encode_attach_identity(session_id, target)
-    eng._sessions.pop(session_id)  # fresh process, reconnect disabled
+    session_id = engine.attach(AdbcTarget(driver="sqlite", location=str(sqlite_db)))
+    assert engine.resolve(session_id).session_id == session_id  # present -> resolves
+    engine._sessions.pop(session_id)  # simulate a fresh worker process
     with pytest.raises(SessionNotFoundError, match="not held by this worker"):
-        eng.resolve(identity)
+        engine.resolve(session_id)
 
 
 def test_missing_session_raises(engine: AdbcEngine) -> None:

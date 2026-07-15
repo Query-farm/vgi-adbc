@@ -32,10 +32,10 @@ pushdown** all the way down to the source.
   the mirror can't express.
 - **Read-only** (v1) — writes are rejected on the scan path (the remote is attached
   `READ_ONLY`) *and* on the `adbc_query` passthrough (its connection is sealed read-only).
-- **Resilient sessions** — an attachment survives a worker-pool process hop: the sealed
-  reconnect recipe rebuilds it transparently (an in-flight streaming scan stays on one
-  worker, or fails cleanly and retryably rather than duplicating rows). See
-  [Sessions, reconnect, and streaming](#sessions-reconnect-and-streaming).
+- **Strictly sticky sessions** — an attached connection lives in one worker process; every
+  follow-up must reach it. A mis-routed call fails loudly rather than silently rebuilding a
+  connection that would lose transactions / temp tables. See
+  [Sticky sessions](#sticky-sessions).
 
 ## Use from DuckDB
 
@@ -139,24 +139,22 @@ ATTACH 'adbc' AS pg (TYPE vgi, LOCATION '<worker>',
 
 The default (`0`) keeps the attach-time snapshot stable — no background re-reads.
 
-## Sessions, reconnect, and streaming
+## Sticky sessions
 
 An ADBC connection is a live, native, **process-local** object that can't be serialized into
-a VGI state token. Each `ATTACH` is held in one worker process. The VGI worker pool (over
-stdio *and* HTTP) can route a follow-up call to a different process — notably after any worker
-error. To make an attachment survive that, the attach handle carries the **sealed connection
-recipe** (session id + target), so any worker process can **transparently reconnect** on a
-miss. On HTTP the handle is AEAD-sealed per-principal (credentials stay protected); on the
-local stdio pipe it's plaintext, but the client already holds those credentials. Set
-`VGI_ADBC_RECONNECT=0` to disable reconnect and fail loudly instead.
+a VGI state token. Each `ATTACH` is held in **one worker process**, keyed by a session id in
+the (AEAD-sealed, on HTTP) attach handle. Every follow-up call **must** reach that same
+process. A call that lands elsewhere — a mis-routed HTTP request, or the VGI worker pool
+spawning a sibling subprocess (notably after a prior error) — fails loudly with a clear
+`SessionNotFoundError`; re-`ATTACH` to recover.
 
-**Streaming is the exception.** A live scan of a huge table is a cursor *position* that can't
-be moved between processes. A scan's batches must all land on the process that opened it —
-which the pool does in the happy path (HTTP also sets a `vgi_adbc_sticky` cookie so a load
-balancer can pin affinity). If a scan *does* get routed elsewhere mid-stream, the worker
-raises a clear error telling you to re-run the query — it never silently restarts and
-duplicates rows. So: **enable HTTP session affinity** for best behavior; reconnect is the
-safety net for everything except an in-flight scan.
+The worker **deliberately does not reconnect** a lost session. A rebuilt connection is a
+*fresh* connection: it would silently lose an open transaction, temp tables, or session
+settings, and a streaming scan's cursor position can't move between processes at all. Failing
+loudly is the only way to stay correct — so, when serving over HTTP behind a load balancer,
+**enable session affinity (sticky sessions)**; the worker sets a `vgi_adbc_sticky` cookie at
+attach and rejects follow-ups that arrive without it. (Stateless read scale-out — pooled
+reconnect for connections with *no* connection-local state — is deferred future work.)
 
 ## Tuning & resource limits
 
@@ -165,8 +163,7 @@ the simple, unbounded v1 behavior.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `VGI_ADBC_RECONNECT` | `1` (on) | Rebuild a session from its sealed target when a worker-pool process hop routes a call to a fresh process. Set `0` to fail loudly instead. |
-| `VGI_ADBC_SESSION_IDLE_SECONDS` | `900` (`0` when reconnect off) | Evict an attachment idle longer than this. Safe by default because an evicted session just reconnects on next use; also bounds the connection copies a process hop can leave behind. `0` disables. |
+| `VGI_ADBC_SESSION_IDLE_SECONDS` | `0` (off) | Evict an attachment idle longer than this. Off by default: sessions are strictly sticky, so an evicted one is a permanent loss (the client must re-`ATTACH`). Enable it (e.g. `3600`) to reclaim connections from clients that never `DETACH`. |
 | `VGI_ADBC_MAX_SESSIONS` | `0` (∞) | Refuse a new `ATTACH` past this many live attachments (idle ones are reaped first). |
 | `VGI_ADBC_SCAN_IDLE_SECONDS` | `0` (off) | Reap an in-flight scan reader not read within this window (frees a cursor a crashed/disconnected client left pinned). **Set this above your slowest client's inter-batch gap** — a live-but-slow scan reaped mid-stream would restart. |
 | `VGI_ADBC_MAX_SCANS` | `0` (∞) | Cap concurrent scan readers; the least-recently-used are evicted past it. |
@@ -228,7 +225,7 @@ build instead of installing from the community repository.
 
 | Path | What |
 |------|------|
-| `vgi_adbc/engine.py` | Embedded haybarn-DuckDB engine + session registry with idle eviction and **stateless reconnect**; introspection, scans, cardinality, refresh, raw queries |
+| `vgi_adbc/engine.py` | Embedded haybarn-DuckDB engine + the strictly-sticky session registry (idle eviction, caps); introspection, scans, cardinality, refresh, raw queries |
 | `vgi_adbc/catalog.py` | `AdbcCatalog(ReadOnlyCatalogInterface)` — ATTACH, introspect, route scans, advertise `adbc_query` |
 | `vgi_adbc/functions.py` | `adbc_scan` (generic pushdown scan) and `adbc_query` (raw passthrough) table functions + the in-flight scan-reader registry |
 | `vgi_adbc/sql.py` | Safe DuckDB SQL construction (quoting/escaping/option-key validation) |

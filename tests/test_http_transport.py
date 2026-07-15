@@ -188,6 +188,7 @@ def test_http_readonly_blocks_writes_and_stays_usable(client) -> None:  # noqa: 
         client.execute(
             "SELECT * FROM db.main.adbc_query('INSERT INTO employees VALUES (99, ''M'', ''x'', 1, 1)')"
         ).fetchall()
-    # ...it left no trace, and the attachment is still usable afterwards (resilient to the error).
+    # ...it left no trace, and the sticky session (single in-process server here) is still
+    # usable for follow-up queries after the error.
     assert client.execute("SELECT count(*) FROM db.main.employees WHERE id = 99").fetchone()[0] == 0
     assert client.execute("SELECT count(*) FROM db.main.employees").fetchone()[0] == 5

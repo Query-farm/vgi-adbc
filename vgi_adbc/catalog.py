@@ -40,7 +40,7 @@ from vgi.catalog import (
     TransactionOpaqueData,
 )
 
-from vgi_adbc.engine import AdbcTarget, decode_attach_identity, encode_attach_identity, get_engine
+from vgi_adbc.engine import AdbcTarget, get_engine
 from vgi_adbc.functions import ADBC_SCAN_FUNCTION_NAME, AdbcQuery, AdbcScan
 from vgi_adbc.metadata import CATALOG_COMMENT, CATALOG_TAGS, SCHEMA_COMMENT, SCHEMA_TAGS
 
@@ -206,12 +206,11 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
                 ctx.set_cookie(STICKY_COOKIE_NAME, uuid.uuid4().hex)
 
         default_schema = self._default_schema(session_id)
-        # The attach identity carries the reconnect recipe (session id + sealed target), so a
-        # follow-up routed to a fresh worker-pool process can rebuild the session. The VGI
-        # framework AEAD-seals this per-principal on HTTP.
-        attach_identity = encode_attach_identity(session_id, target)
+        # The attach handle is the sticky session id (the VGI framework AEAD-seals it
+        # per-principal on HTTP). Every follow-up must land on this process (see the sticky
+        # sessions notes); a mis-routed call fails loudly rather than reconnecting.
         return CatalogAttachResult(
-            attach_opaque_data=AttachOpaqueData(attach_identity),
+            attach_opaque_data=AttachOpaqueData(session_id),
             supports_transactions=False,
             supports_time_travel=False,
             catalog_version_frozen=False,
@@ -228,11 +227,10 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         """Close the remote connection for a detached catalog.
 
         Args:
-            attach_opaque_data: The attach identity (session id + sealed target).
+            attach_opaque_data: The sticky session id.
 
         """
-        session_id, _target = decode_attach_identity(bytes(attach_opaque_data))
-        get_engine().detach(session_id)
+        get_engine().detach(bytes(attach_opaque_data))
 
     def catalog_version(
         self,
@@ -241,10 +239,10 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         transaction_opaque_data: TransactionOpaqueData | None = None,
         ctx: CallContext | None = None,
     ) -> int:
-        """Return a constant catalog version, checking HTTP session affinity.
+        """Return a constant catalog version, asserting HTTP session stickiness.
 
         Args:
-            attach_opaque_data: The attach identity (session id + sealed target).
+            attach_opaque_data: The sticky session id.
             transaction_opaque_data: Unused.
             ctx: Call context; its cookies are checked on HTTP transport.
 
@@ -253,29 +251,22 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
             for the life of an attachment).
 
         Raises:
-            ValueError: If the sticky cookie is absent on an HTTP follow-up *and* reconnect
-                is disabled (with reconnect on, a mis-routed call rebuilds the session, so a
-                missing cookie is only warned — affinity still matters for in-flight scans).
+            ValueError: If the sticky cookie is absent on an HTTP follow-up (a mis-routed
+                request; enable load-balancer session affinity).
 
         """
         del transaction_opaque_data
-        engine = get_engine()
         if ctx is not None and ctx.cookies and STICKY_COOKIE_NAME not in ctx.cookies:
-            if not engine.reconnect_enabled:
-                msg = (
-                    f"expected sticky cookie {STICKY_COOKIE_NAME!r} on follow-up request; "
-                    "enable load-balancer session affinity for the ADBC worker."
-                )
-                raise ValueError(msg)
-            logger.warning(
-                "follow-up request missing sticky cookie %r; the session will reconnect, but enable "
-                "load-balancer session affinity so in-flight scans stay on one worker.",
-                STICKY_COOKIE_NAME,
+            msg = (
+                f"expected sticky cookie {STICKY_COOKIE_NAME!r} on follow-up request; "
+                "enable load-balancer session affinity for the ADBC worker."
             )
+            raise ValueError(msg)
         # DuckDB calls this at transaction boundaries — the safe point to re-read the
         # remote catalog when the session has a refresh interval configured, and a cheap,
         # rate-limited place to reap idle sessions/readers. The version only advances when
         # the remote actually changed, so unchanged catalogs stay cached.
+        engine = get_engine()
         engine.reap()
         session = engine.resolve(bytes(attach_opaque_data))
         engine.maybe_refresh(session)

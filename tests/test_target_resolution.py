@@ -82,33 +82,6 @@ def test_attach_sql_rejects_unsafe_option_key() -> None:
         engine._attach_sql(target)
 
 
-def test_attach_identity_roundtrip() -> None:
-    from vgi_adbc.engine import decode_attach_identity, encode_attach_identity
-
-    sid = b"0123456789abcdef"  # 16 bytes
-    target = AdbcTarget(
-        driver="postgresql",
-        location="postgresql://u:p@h/db",
-        entrypoint="custom_entry",
-        options={"username": "alice", "sslmode": "require"},
-        read_only=True,
-        refresh_seconds=30.0,
-    )
-    blob = encode_attach_identity(sid, target)
-    got_sid, got_target = decode_attach_identity(blob)
-    assert got_sid == sid
-    assert got_target == target
-
-
-def test_attach_identity_legacy_16byte_has_no_target() -> None:
-    from vgi_adbc.engine import decode_attach_identity
-
-    sid = b"\x01" * 16
-    got_sid, got_target = decode_attach_identity(sid)
-    assert got_sid == sid
-    assert got_target is None
-
-
 @pytest.mark.parametrize(
     ("driver", "expected"),
     [

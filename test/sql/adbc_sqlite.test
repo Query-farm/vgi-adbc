@@ -107,18 +107,14 @@ SELECT name FROM db.main.adbc_query('PRAGMA table_info(employees)') WHERE pk = 1
 id
 
 # --- Read-only guarantee: adbc_query cannot mutate the source under a read-only attach. ---
-# The write is rejected at the source (the raw handle is sealed read-only).
+# The write is rejected at the source (the raw handle is sealed read-only). This is the last
+# assertion before DETACH on purpose: an adbc_query that errors can make the VGI extension's
+# stdio worker pool route the *next* RPC to a sibling worker (SessionNotFoundError) — sessions
+# are strictly sticky and never reconnect — so we don't chain a follow-up here. The
+# "no trace left" side is asserted directly in tests/test_engine_sqlite.py.
 statement error
 SELECT * FROM db.main.adbc_query('INSERT INTO employees VALUES (99, ''Mallory'', ''x'', 1, 1)');
 ----
-
-# The follow-up query works even though the passthrough error made the worker pool route this
-# call to a fresh process: the session is transparently rebuilt from its sealed target
-# (stateless reconnect). And the blocked write left no trace at the source.
-query I
-SELECT count(*) FROM db.main.employees WHERE id = 99;
-----
-0
 
 statement ok
 DETACH db;

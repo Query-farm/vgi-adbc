@@ -17,11 +17,11 @@ id) via ``attach_opaque_data``. The function:
   DuckDB's pipe backpressure paces the remote read.
 
 The live ``RecordBatchReader`` is kept in a *process-local* registry keyed by a per-scan
-token (the token, not the reader, lives in the serializable state). The *session* rebuilds
-itself on a different worker-pool process (stateless reconnect), but a *streaming reader*
-cannot — so if a follow-up ``process`` for an already-opened scan lands on a process without
-the reader, we raise :class:`ScanInterruptedError` (re-run the query) rather than silently
-restart the stream from row 0. Session affinity keeps a scan on one process in the happy path.
+token (the token, not the reader, lives in the serializable state). Sessions are strictly
+sticky, so a follow-up normally lands on the same process and finds its reader. If it does
+not — the reader was reaped as idle, or a worker-pool hop routed an already-opened scan to a
+process without it — we raise :class:`ScanInterruptedError` (re-run the query) rather than
+silently re-open the stream from row 0 and duplicate rows.
 """
 
 from __future__ import annotations
@@ -63,9 +63,9 @@ ADBC_SCAN_FUNCTION_NAME = "adbc_scan"
 ADBC_QUERY_FUNCTION_NAME = "adbc_query"
 
 _SCAN_INTERRUPTED_MSG = (
-    "ADBC scan interrupted: its streaming reader is no longer held by this worker process "
-    "(the worker pool routed a follow-up batch to a different process mid-scan). A live scan "
-    "cannot resume across processes; re-run the query to restart it."
+    "ADBC scan interrupted: its streaming reader is no longer available in this worker process "
+    "(it was reaped as idle, or a worker-pool hop routed a follow-up batch to another process). "
+    "A live scan cannot resume across processes; re-run the query to restart it."
 )
 
 

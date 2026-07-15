@@ -10,24 +10,22 @@ the local alias ``remote`` — so the worker queries it with ordinary DuckDB SQL
 (``SELECT ... FROM remote.<schema>.<table>``) and ``adbc_scanner`` re-dialects and
 pushes predicates/projection down to PostgreSQL, SQLite, or any other ADBC target.
 
-**Sessions + stateless reconnect.** A live ADBC connection is a native, process-local
-object; it can't be serialized into a VGI state token. Each attach is held in *this*
-process, keyed by a random session id. The VGI worker pool (subprocess *and* HTTP) can
-route a follow-up call to a sibling/fresh process — notably after any worker error — so the
-session id alone is not enough. Instead the catalog packs ``session_id || json(target)`` (the
-reconnect recipe) into ``attach_opaque_data`` (:func:`encode_attach_identity`), which the
-framework AEAD-seals per-principal on HTTP. On a registry miss, :meth:`AdbcEngine.resolve`
-rebuilds the session from that sealed target (:meth:`AdbcEngine._reconnect_session`), so an
-attachment survives a process hop; ``reconnect=False`` reverts to raising
-:class:`SessionNotFoundError`. A *live streaming scan* cannot resume across a hop — that is
-enforced loudly at the scan layer (``ScanInterruptedError``), not silently restarted.
+**Strictly sticky sessions.** A live ADBC connection is a native, process-local object; it
+can't be serialized into a VGI state token. Each attach is held in *this* process, keyed by
+a random session id packed into ``attach_opaque_data``. Every follow-up call **must** land on
+the same worker process — deployments MUST enable load-balancer session affinity on HTTP. A
+call that reaches a different process (the VGI worker pool can spawn/route to a sibling
+process — notably after any worker error) raises :class:`SessionNotFoundError` rather than
+reconnecting: a rebuilt connection would silently lose any connection-local state (an open
+transaction, temp tables, session settings), so a lost session fails loudly and the client
+re-``ATTACH``es. A *live streaming scan* likewise cannot resume across processes — enforced
+loudly at the scan layer (``ScanInterruptedError``), never silently restarted.
 """
 
 from __future__ import annotations
 
 import atexit
 import hashlib
-import json
 import logging
 import threading
 import time
@@ -146,12 +144,13 @@ def _default_connect() -> ConnectFn:
 
 
 class SessionNotFoundError(RuntimeError):
-    """Raised when an attach session isn't held here and can't be reconnected.
+    """Raised when an attach session isn't held by this worker process.
 
-    A session normally rebuilds itself from its sealed target when a worker-pool process hop
-    routes a call to a fresh process (:meth:`AdbcEngine.resolve`). This is raised only when
-    that can't happen — reconnect is disabled (``VGI_ADBC_RECONNECT=0``) or the token is a
-    legacy id-only one with no embedded target. Recover by re-``ATTACH``-ing the database.
+    Sessions are strictly sticky: an attached connection lives only in the process that
+    served its ATTACH and is never rebuilt elsewhere — a fresh connection would silently lose
+    connection-local state (an open transaction, temp tables, session settings). A call that
+    reaches a different process (worker-pool hop, or a restarted worker) fails loudly instead.
+    Recover by re-``ATTACH``-ing the database.
     """
 
 
@@ -189,69 +188,6 @@ class AdbcTarget:
     options: dict[str, str] = field(default_factory=dict)
     read_only: bool = True
     refresh_seconds: float = 0.0
-
-
-# The attach identity carried in ``attach_opaque_data`` is ``session_id(16) || json(target)``
-# — the random per-attach id plus the recipe to rebuild the connection. The VGI framework
-# AEAD-seals this per-principal on HTTP (so credentials never leave the worker in the clear
-# there) and passes it through on the local stdio pipe. Any pool worker that receives a call
-# for a session it doesn't hold reconstructs it from this recipe (see ``AdbcEngine.resolve``).
-_SESSION_ID_LEN = 16
-
-
-def encode_attach_identity(session_id: bytes, target: AdbcTarget) -> bytes:
-    """Serialize ``(session_id, target)`` into the attach-identity bytes.
-
-    Args:
-        session_id: The 16-byte per-attach id.
-        target: The resolved connection parameters (the reconnect recipe).
-
-    Returns:
-        ``session_id || json(target)`` bytes.
-
-    """
-    payload = {
-        "d": target.driver,
-        "l": target.location,
-        "e": target.entrypoint,
-        "o": target.options,
-        "r": target.read_only,
-        "rs": target.refresh_seconds,
-    }
-    return session_id + json.dumps(payload, separators=(",", ":")).encode("utf-8")
-
-
-def decode_attach_identity(blob: bytes) -> tuple[bytes, AdbcTarget | None]:
-    """Parse attach-identity bytes back into ``(session_id, target)``.
-
-    Tolerates a legacy 16-byte-only token (returns ``target=None``, so the caller falls back
-    to strict lookup without reconnect).
-
-    Args:
-        blob: The attach-identity bytes from ``attach_opaque_data``.
-
-    Returns:
-        ``(session_id, target)``; ``target`` is None for a legacy/opaque token.
-
-    """
-    session_id = bytes(blob[:_SESSION_ID_LEN])
-    rest = bytes(blob[_SESSION_ID_LEN:])
-    if not rest:
-        return session_id, None
-    try:
-        payload = json.loads(rest.decode("utf-8"))
-        target = AdbcTarget(
-            driver=payload["d"],
-            location=payload["l"],
-            entrypoint=payload["e"],
-            options=dict(payload["o"]),
-            read_only=payload["r"],
-            refresh_seconds=payload["rs"],
-        )
-    except (ValueError, KeyError, TypeError):
-        logger.debug("could not decode attach target; treating as opaque", exc_info=True)
-        return session_id, None
-    return session_id, target
 
 
 @dataclass
@@ -307,7 +243,6 @@ class AdbcEngine:
         query_timeout_seconds: float = 0.0,
         cardinality_mode: str = "estimate",
         cardinality_max_count: int = 0,
-        reconnect: bool = True,
     ) -> None:
         """Initialize the engine.
 
@@ -331,9 +266,6 @@ class AdbcEngine:
                 bounded count), ``count`` (always ``count(*)``), or ``off``.
             cardinality_max_count: When counting, skip (return no estimate) for relations
                 whose count would exceed this (0 = no cap).
-            reconnect: When True (default), rebuild a session from its sealed target on a
-                registry miss (so an attachment survives a worker-pool process hop/respawn),
-                rather than raising. Streaming scans still can't resume across a hop.
 
         """
         self._connect_fn = connect_fn or _default_connect()
@@ -354,13 +286,6 @@ class AdbcEngine:
         self._query_timeout = max(0.0, query_timeout_seconds)
         self._cardinality_mode = cardinality_mode
         self._cardinality_max_count = max(0, cardinality_max_count)
-        # Stateless reconnect: rebuild a session from its sealed target on a miss.
-        self._reconnect = reconnect
-
-    @property
-    def reconnect_enabled(self) -> bool:
-        """Whether a missing session is rebuilt from its sealed target (vs raising)."""
-        return self._reconnect
 
     # -- extension + connection setup ------------------------------------------------
 
@@ -495,58 +420,30 @@ class AdbcEngine:
         )
 
     def resolve(self, attach_opaque_data: bytes | None) -> AdbcSession:
-        """Return the session for an attachment, reconnecting from its sealed target on a miss.
+        """Look up the session an attach handle refers to (strictly sticky, no reconnect).
 
-        This is the entry point catalog/function calls use (they carry the sealed attach
-        identity). When the session isn't held by *this* worker process — because the
-        worker-pool routed the call to a sibling/fresh process — it is rebuilt from the
-        target packed into ``attach_opaque_data`` (unless reconnect is disabled or the token
-        is a legacy id-only one), so an attachment survives a process hop. A live streaming
-        scan still cannot resume across a hop; that is handled at the scan layer.
+        This is the entry point catalog/function calls use. ``attach_opaque_data`` is the
+        16-byte session id. If the session isn't held by *this* worker process the call
+        raises :class:`SessionNotFoundError` rather than rebuilding a fresh connection — a
+        rebuilt connection would silently lose connection-local state (an open transaction,
+        temp tables, session settings), so a lost session fails loudly and the client
+        re-``ATTACH``es.
 
         Args:
-            attach_opaque_data: The attach identity bytes (``session_id || json(target)``).
+            attach_opaque_data: The 16-byte session id from the attach handle.
 
         Returns:
-            The live (possibly just-reconnected) :class:`AdbcSession`.
+            The live :class:`AdbcSession`.
 
         Raises:
-            SessionNotFoundError: If the session is absent and cannot be reconnected.
+            ValueError: If the attach data is missing.
+            SessionNotFoundError: If the session isn't held by this process.
 
         """
         if not attach_opaque_data:
             msg = "ADBC function invoked without an attachment; ATTACH the catalog first."
             raise ValueError(msg)
-        blob = bytes(attach_opaque_data)
-        # Fast path: only the 16-byte id is needed for a registry hit — don't decode the
-        # (JSON) target on every call, only on a miss when we actually reconnect.
-        session_id = blob[:_SESSION_ID_LEN]
-        with self._registry_lock:
-            session = self._sessions.get(session_id)
-        if session is not None:
-            session.last_used = time.monotonic()
-            return session
-        _session_id, target = decode_attach_identity(blob)
-        if not self._reconnect or target is None:
-            raise SessionNotFoundError(self._session_missing_msg(session_id))
-        return self._reconnect_session(session_id, target)
-
-    def _reconnect_session(self, session_id: bytes, target: AdbcTarget) -> AdbcSession:
-        """Rebuild a session from its target under the same id (idempotent across threads)."""
-        self.reap()  # reclaim idle sessions before rebuilding one
-        session = self._build_session(session_id, target)
-        with self._registry_lock:
-            existing = self._sessions.get(session_id)
-            if existing is None:
-                self._sessions[session_id] = session
-        if existing is not None:
-            # A concurrent call already rebuilt it; discard our duplicate.
-            with session.lifecycle_lock:
-                _close_session(session)
-            existing.last_used = time.monotonic()
-            return existing
-        logger.info("adbc.reconnect driver=%s sessions=%s", target.driver, len(self._sessions))
-        return session
+        return self.get(bytes(attach_opaque_data))
 
     def _enforce_session_limit(self) -> None:
         """Refuse a new attach when at the session cap (after idle reaping).
@@ -685,12 +582,15 @@ class AdbcEngine:
 
     @staticmethod
     def _session_missing_msg(session_id: bytes) -> str:
-        """Build the error text for a session that isn't held and can't be reconnected."""
+        """Build the error text for a session that isn't held by this worker process."""
         return (
-            f"ADBC attach session {session_id.hex()[:12]} is not held by this worker process and "
-            "could not be reconnected (reconnect disabled, or a legacy id-only attach token). Each "
-            "attachment normally rebuilds itself from its sealed target when a worker-pool process "
-            "hop routes a call to a fresh process; when it can't, re-ATTACH to recover."
+            f"ADBC attach session {session_id.hex()[:12]} is not held by this worker process. Each "
+            "attached connection lives only in the process that served its ATTACH (strictly sticky "
+            "sessions) and is not rebuilt elsewhere — a fresh connection would silently lose any "
+            "transaction, temp tables, or session state. This request reached a different process, or "
+            "the worker was restarted. Re-ATTACH the database to recover. On HTTP transport, enable "
+            "load-balancer session affinity; on subprocess transport the VGI worker pool can spawn "
+            "additional worker processes (notably after a prior error)."
         )
 
     def detach(self, session_id: bytes) -> None:
@@ -1275,14 +1175,11 @@ def _engine_config_from_env() -> dict[str, Any]:
     if mode not in ("estimate", "count", "off"):
         logger.warning("ignoring unknown VGI_ADBC_CARDINALITY=%r (using 'estimate')", mode)
         mode = "estimate"
-    reconnect = (os.environ.get("VGI_ADBC_RECONNECT") or "1").strip().lower() not in ("0", "false", "no")
-    # With reconnect on, an idle-evicted session is transparently rebuilt on next use, so idle
-    # eviction is safe to enable by default — it also bounds the connection copies a worker-pool
-    # process hop can leave behind. Disable by setting VGI_ADBC_SESSION_IDLE_SECONDS=0.
-    session_idle_default = 900.0 if reconnect else 0.0
+    # Idle session eviction is off by default: sessions are strictly sticky (no reconnect), so
+    # evicting one is a permanent loss — enable it only when you accept re-ATTACH on next use.
     return {
         "extension_path": os.environ.get("VGI_ADBC_EXTENSION_PATH") or None,
-        "session_idle_seconds": _f("VGI_ADBC_SESSION_IDLE_SECONDS", session_idle_default),
+        "session_idle_seconds": _f("VGI_ADBC_SESSION_IDLE_SECONDS", 0.0),
         "scan_idle_seconds": _f("VGI_ADBC_SCAN_IDLE_SECONDS", 0.0),
         "max_sessions": _i("VGI_ADBC_MAX_SESSIONS", 0),
         "max_scans": _i("VGI_ADBC_MAX_SCANS", 0),
@@ -1290,5 +1187,4 @@ def _engine_config_from_env() -> dict[str, Any]:
         "query_timeout_seconds": _f("VGI_ADBC_QUERY_TIMEOUT_SECONDS", 0.0),
         "cardinality_mode": mode,
         "cardinality_max_count": _i("VGI_ADBC_CARDINALITY_MAX_COUNT", 0),
-        "reconnect": reconnect,
     }
