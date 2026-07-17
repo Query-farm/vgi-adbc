@@ -1,6 +1,6 @@
 [project]
 name = "vgi-adbc"
-version = "0.2.0"
+version = "0.3.0"
 description = "Query PostgreSQL, SQLite, and any ADBC database from DuckDB over VGI — server-side ADBC via an embedded haybarn DuckDB + the adbc_scanner community extension"
 readme = "README.md"
 keywords = [

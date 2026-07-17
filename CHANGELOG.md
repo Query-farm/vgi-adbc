@@ -15,6 +15,8 @@ a red build, signalling a needed bump.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-16
+
 ### Added
 - **Observability.** Engine lifecycle stats (counters + live `active_sessions` /
   `active_scans` gauges), a rate-limited `adbc.stats` log line, and an opt-in Prometheus
@@ -59,6 +61,7 @@ a red build, signalling a needed bump.
   estimates, catalog refresh, `adbc_query` raw-SQL passthrough, read-only enforcement, over
   stdio and HTTP, with a container image.
 
-[Unreleased]: https://github.com/Query-farm/vgi-adbc/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Query-farm/vgi-adbc/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Query-farm/vgi-adbc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Query-farm/vgi-adbc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Query-farm/vgi-adbc/releases/tag/v0.1.0
