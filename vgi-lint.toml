@@ -10,29 +10,27 @@ fail_on = "info"
 # richly (see vgi_adbc/metadata.py); those rules stay enforced. The exemptions below
 # are the remote-object rules only.
 ignore = [
-    "VGI307", # adbc_query returns a runtime-determined schema (whatever the passthrough SQL yields) — there is no fixed result schema to declare
-    "VGI151", # min examples counts examples on advertised tables/functions; ours live on the catalog/schema and the internal scan function (tables are dynamic)
-    "VGI515", # tooling drift: our adbc_query examples DO carry descriptions (verified on the advertised FunctionInfo via _function_to_info), but the current vgi-lint-check reports them as missing — a lint/serialization artifact, not a metadata defect
+    { code = "VGI307", kind = "domain-exemption", reason = "adbc_query returns a runtime-determined schema (whatever the passthrough SQL yields) — there is no fixed result schema to declare" },
+    { code = "VGI151", kind = "domain-exemption", reason = "min examples counts examples on advertised tables/functions; ours live on the catalog/schema and the internal scan function (tables are dynamic)" },
+    { code = "VGI515", kind = "tooling-bug", reason = "tooling drift: our adbc_query examples DO carry descriptions (verified on the advertised FunctionInfo via _function_to_info), but the current vgi-lint-check reports them as missing — a lint/serialization artifact, not a metadata defect" },
 
-    "VGI111", # table has no comment — remote tables are the user's, discovered live
-    "VGI112", # table missing vgi.doc_llm — idem
-    "VGI113", # table missing vgi.doc_md — idem
-    "VGI123", # object needs a classifying tag — enforced on our schema; remote tables can't carry one
-    "VGI126", # object needs vgi.keywords — enforced on catalog/schema; not on remote tables
-    "VGI201", # column comment coverage — remote columns are the user's
-    "VGI202", # column has no comment — idem
-    "VGI411", # each object should carry a vgi.category — remote tables can't be tagged
-    "VGI412", # a declared category must contain a member — every category would be empty (dynamic tables)
-    "VGI413", # schema must declare a vgi.categories registry — pointless when no object can join a category
-    "VGI501", # tables should ship vgi.example_queries — remote tables are dynamic
-    "VGI511", # every object called by an example — cannot pre-name a user's tables
-    "VGI520", # every object exercised by an agent test task — cannot pre-name a user's tables
-    "VGI806", # no constraints declared on any table — remote schema owns constraints
-    "VGI807", # each table should declare a primary key — idem
+    { code = "VGI111", kind = "domain-exemption", reason = "table has no comment — remote tables are the user's, discovered live" },
+    { code = "VGI112", kind = "domain-exemption", reason = "table missing vgi.doc_llm — idem" },
+    { code = "VGI113", kind = "domain-exemption", reason = "table missing vgi.doc_md — idem" },
+    { code = "VGI123", kind = "domain-exemption", reason = "object needs a classifying tag — enforced on our schema; remote tables can't carry one" },
+    { code = "VGI126", kind = "domain-exemption", reason = "object needs vgi.keywords — enforced on catalog/schema; not on remote tables" },
+    { code = "VGI201", kind = "domain-exemption", reason = "column comment coverage — remote columns are the user's" },
+    { code = "VGI202", kind = "domain-exemption", reason = "column has no comment — idem" },
+    { code = "VGI411", kind = "domain-exemption", reason = "each object should carry a vgi.category — remote tables can't be tagged" },
+    { code = "VGI412", kind = "domain-exemption", reason = "a declared category must contain a member — every category would be empty (dynamic tables)" },
+    { code = "VGI413", kind = "domain-exemption", reason = "schema must declare a vgi.categories registry — pointless when no object can join a category" },
+    { code = "VGI501", kind = "domain-exemption", reason = "tables should ship vgi.example_queries — remote tables are dynamic" },
+    { code = "VGI511", kind = "domain-exemption", reason = "every object called by an example — cannot pre-name a user's tables" },
+    { code = "VGI520", kind = "domain-exemption", reason = "every object exercised by an agent test task — cannot pre-name a user's tables" },
+    { code = "VGI806", kind = "domain-exemption", reason = "no constraints declared on any table — remote schema owns constraints" },
+    { code = "VGI807", kind = "domain-exemption", reason = "each table should declare a primary key — idem" },
 ]
 
-[tool.vgi-lint-check.options]
-column_comment_min_ratio = 0.8
 
 [tool.vgi-lint-check.execution]
 # The scan probes attach a live SQLite fixture over ADBC; give the worker room to
