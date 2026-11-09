@@ -15,6 +15,8 @@ a red build, signalling a needed bump.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-09
+
 ### Changed
 - **Ported to VGI protocol 3.2** (`vgi-python` 0.16.0 -> 0.50.0, `vgi-rpc` 0.24.0 -> 0.53.1),
   matching the `vgi` extension now served by the haybarn community repository. Catalog methods
@@ -73,7 +75,8 @@ a red build, signalling a needed bump.
   estimates, catalog refresh, `adbc_query` raw-SQL passthrough, read-only enforcement, over
   stdio and HTTP, with a container image.
 
-[Unreleased]: https://github.com/Query-farm/vgi-adbc/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Query-farm/vgi-adbc/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Query-farm/vgi-adbc/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Query-farm/vgi-adbc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Query-farm/vgi-adbc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Query-farm/vgi-adbc/releases/tag/v0.1.0
