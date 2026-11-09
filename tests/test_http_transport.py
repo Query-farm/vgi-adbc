@@ -57,11 +57,13 @@ def _free_port() -> int:
 def _vgi_serve_path() -> str | None:
     from shutil import which
 
-    found = which("vgi-serve")
-    if found:
-        return found
+    # Prefer the project environment's vgi-serve: the worker must run on the project's own
+    # (locked) haybarn, while CI may overlay a newer haybarn for the *client* side only
+    # (`uv run --with haybarn>=2...`), whose overlay bin/ would otherwise shadow it on PATH.
     candidate = REPO_ROOT / ".venv" / "bin" / "vgi-serve"
-    return str(candidate) if candidate.exists() else None
+    if candidate.exists():
+        return str(candidate)
+    return which("vgi-serve")
 
 
 def _build_fixture(path: Path) -> None:
@@ -130,6 +132,17 @@ def _vgi_client():  # noqa: ANN202 - haybarn connection with the vgi extension l
         import haybarn
     except ImportError:
         pytest.skip("haybarn not available")
+    # The worker speaks VGI protocol 3.2 and the vgi extension matches major+minor exactly.
+    # The haybarn 1.5.x community channel only serves an older vgi build, so an in-process
+    # 1.5.x client can't attach. The worker's embedded engine stays on the locked haybarn
+    # 1.5.4 (its adbc_scanner API), so run this suite with a haybarn 2.0 client overlaid:
+    #   uv run --with 'haybarn>=2.0.0rc11' pytest tests/test_http_transport.py
+    # (./run_http_tests.sh covers the HTTP path with the latest haybarn-cli regardless.)
+    if int(haybarn.__version__.split(".", 1)[0]) < 2:
+        pytest.skip(
+            f"in-process haybarn {haybarn.__version__} serves a pre-3.2 vgi client; "
+            "run with: uv run --with 'haybarn>=2.0.0rc11' pytest tests/test_http_transport.py"
+        )
     con = haybarn.connect(config={"allow_unsigned_extensions": "true"})
     try:
         try:

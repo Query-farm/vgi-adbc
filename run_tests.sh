@@ -45,7 +45,9 @@ echo "    unittest: $UNITTEST"
 echo "    fixture:  $FIXTURE"
 echo "    tests:    $TEST_GLOB"
 
+# haybarn-unittest 2.0 isolates $HOME per run; --keep-home keeps the real home so the
+# `vgi` extension installed above (~/.haybarn) is found by the suite.
 VGI_TEST_WORKER="$WORKER" \
 VGI_WORKER_CATALOG_NAME="adbc" \
 VGI_ADBC_TEST_SQLITE="$FIXTURE" \
-    "$UNITTEST" --test-dir "$REPO_ROOT" "$TEST_GLOB"
+    "$UNITTEST" --keep-home --test-dir "$REPO_ROOT" "$TEST_GLOB"

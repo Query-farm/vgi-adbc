@@ -38,7 +38,9 @@ from vgi.catalog import (
     SerializedSchema,
     TableInfo,
     TransactionOpaqueData,
+    constraint_record,
 )
+from vgi.catalog.constraints import ConstraintEnforcement, ConstraintKind, ConstraintValidation
 
 from vgi_adbc.engine import AdbcTarget, get_engine
 from vgi_adbc.functions import ADBC_SCAN_FUNCTION_NAME, AdbcQuery, AdbcScan
@@ -48,6 +50,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from vgi.catalog.catalog_interface import FunctionInfo, IndexInfo, MacroInfo, ViewInfo
+    from vgi.protocol import ClientCapabilities
     from vgi_rpc.rpc import CallContext
 
 logger = logging.getLogger("vgi_adbc.catalog")
@@ -67,6 +70,22 @@ _RESERVED_OPTIONS = frozenset({"driver", "uri", "location", "entrypoint", "read_
 
 # ATTACH option keys the framework injects that are not driver options.
 _FRAMEWORK_OPTIONS = frozenset({"type", "vgi_data_version", "vgi_implementation_version"})
+
+
+def _schema_name(path: Sequence[str]) -> str | None:
+    """Map a VGI schema path to the remote ADBC schema name.
+
+    ADBC databases expose a flat list of schemas, so only single-component paths
+    can name one.
+
+    Args:
+        path: The raw schema path components.
+
+    Returns:
+        The single schema name, or None for an empty or nested path.
+
+    """
+    return path[0] if len(path) == 1 else None
 
 
 def _resolve_target(name: str, options: dict[str, Any]) -> AdbcTarget:
@@ -181,6 +200,7 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         options: dict[str, Any],
         data_version_spec: str | None = None,
         implementation_version: str | None = None,
+        client_capabilities: ClientCapabilities | None = None,
         ctx: CallContext | None = None,
     ) -> CatalogAttachResult:
         """Open the remote ADBC database and register a sticky session.
@@ -190,13 +210,14 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
             options: The ATTACH options (driver, uri, credentials, ...).
             data_version_spec: Ignored (no data versioning).
             implementation_version: Ignored.
+            client_capabilities: Ignored.
             ctx: Call context; used to pin the HTTP session.
 
         Returns:
             The attach result whose ``attach_opaque_data`` is the sticky session id.
 
         """
-        del data_version_spec, implementation_version
+        del data_version_spec, implementation_version, client_capabilities
         target = _resolve_target(name, options)
         session_id = get_engine().attach(target)
 
@@ -294,8 +315,7 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         session = get_engine().resolve(bytes(attach_opaque_data))
         return [
             SchemaInfo(
-                attach_opaque_data=attach_opaque_data,
-                name=schema_name,
+                path=[schema_name],
                 comment=SCHEMA_COMMENT,
                 tags=dict(SCHEMA_TAGS),
             )
@@ -307,25 +327,25 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         *,
         attach_opaque_data: AttachOpaqueData,
         transaction_opaque_data: TransactionOpaqueData | None,
-        name: str,
+        path: Sequence[str],
     ) -> SchemaInfo | None:
-        """Return a remote schema by name, or None if absent.
+        """Return a remote schema by path, or None if absent.
 
         Args:
             attach_opaque_data: The sticky session id.
             transaction_opaque_data: Unused.
-            name: The schema name.
+            path: The schema path (a single remote schema name).
 
         Returns:
             The schema info, or None.
 
         """
         del transaction_opaque_data
+        name = _schema_name(path)
         session = get_engine().resolve(bytes(attach_opaque_data))
-        if name in get_engine().schemas(session):
+        if name is not None and name in get_engine().schemas(session):
             return SchemaInfo(
-                attach_opaque_data=attach_opaque_data,
-                name=name,
+                path=[name],
                 comment=SCHEMA_COMMENT,
                 tags=dict(SCHEMA_TAGS),
             )
@@ -336,7 +356,7 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         *,
         attach_opaque_data: AttachOpaqueData,
         transaction_opaque_data: TransactionOpaqueData | None,
-        name: str,
+        path: Sequence[str],
         type: SchemaObjectType,
     ) -> Sequence[TableInfo | ViewInfo | FunctionInfo | MacroInfo | IndexInfo]:
         """List a schema's relations (tables and views, both scannable).
@@ -344,7 +364,7 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         Args:
             attach_opaque_data: The sticky session id.
             transaction_opaque_data: Unused.
-            name: The schema name.
+            path: The schema path (a single remote schema name).
             type: The object kind to return.
 
         Returns:
@@ -354,12 +374,15 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
 
         """
         del transaction_opaque_data
+        name = _schema_name(path)
+        if name is None:
+            return []
         if type == SchemaObjectType.TABLE_FUNCTION:
             # Expose the raw-SQL passthrough as a callable, catalog-scoped function so
             # it receives this attachment's identity (attach_opaque_data) when called.
             session = get_engine().resolve(bytes(attach_opaque_data))
             if name in get_engine().schemas(session):
-                return [self._function_to_info(AdbcQuery, name)]
+                return [self._function_to_info(AdbcQuery, [name])]
             return []
         if type != SchemaObjectType.TABLE:
             return []
@@ -376,7 +399,7 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         *,
         attach_opaque_data: AttachOpaqueData,
         transaction_opaque_data: TransactionOpaqueData | None,
-        schema_name: str,
+        schema_path: Sequence[str],
         name: str,
         at_unit: str | None = None,
         at_value: str | None = None,
@@ -386,7 +409,7 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         Args:
             attach_opaque_data: The sticky session id.
             transaction_opaque_data: Unused.
-            schema_name: The schema name.
+            schema_path: The schema path (a single remote schema name).
             name: The table or view name.
             at_unit: Unused (no time travel).
             at_value: Unused.
@@ -396,6 +419,9 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
 
         """
         del transaction_opaque_data, at_unit, at_value
+        schema_name = _schema_name(schema_path)
+        if schema_name is None:
+            return None
         session = get_engine().resolve(bytes(attach_opaque_data))
         return self._table_info(session, schema_name, name)
 
@@ -404,7 +430,7 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         *,
         attach_opaque_data: AttachOpaqueData,
         transaction_opaque_data: TransactionOpaqueData | None,
-        schema_name: str,
+        schema_path: Sequence[str],
         name: str,
     ) -> None:
         """Views are surfaced as scannable tables, so this always returns None.
@@ -412,14 +438,14 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         Args:
             attach_opaque_data: Unused.
             transaction_opaque_data: Unused.
-            schema_name: Unused.
+            schema_path: Unused.
             name: Unused.
 
         Returns:
             None.
 
         """
-        del attach_opaque_data, transaction_opaque_data, schema_name, name
+        del attach_opaque_data, transaction_opaque_data, schema_path, name
         return None
 
     def table_scan_function_get(
@@ -427,7 +453,7 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         *,
         attach_opaque_data: AttachOpaqueData,
         transaction_opaque_data: TransactionOpaqueData | None,
-        schema_name: str,
+        schema_path: Sequence[str],
         name: str,
         at_unit: str | None,
         at_value: str | None,
@@ -438,7 +464,8 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
             attach_opaque_data: The sticky session id (reaches the function as
                 ``attach_opaque_data``).
             transaction_opaque_data: Unused.
-            schema_name: The remote schema name (passed as positional arg 0).
+            schema_path: The remote schema path; its single component is passed as
+                positional arg 0.
             name: The remote table name (passed as positional arg 1).
             at_unit: Unused.
             at_value: Unused.
@@ -448,6 +475,10 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
 
         """
         del transaction_opaque_data, at_unit, at_value
+        schema_name = _schema_name(schema_path)
+        if schema_name is None:
+            msg = f"ADBC schema paths have exactly one component, got {schema_path!r}"
+            raise ValueError(msg)
         return ScanFunctionResult(
             function_name=ADBC_SCAN_FUNCTION_NAME,
             positional_arguments=[pa.scalar(schema_name), pa.scalar(name)],
@@ -499,14 +530,26 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
         # (Some drivers — e.g. the SQLite ADBC driver — report every column nullable, so
         # this is empty for them; PostgreSQL generally populates it. PK/unique/check are
         # not exposed by adbc_scanner, so they stay empty.)
-        not_null = [i for i, fld in enumerate(arrow_schema) if not fld.nullable]
+        # The remote database enforces its own NOT NULL on every row, so declare them
+        # ENFORCED + ALL_ROWS (the only records the client trusts as engine facts).
+        constraints = [
+            constraint_record(
+                [schema_name],
+                name,
+                f"not_null:{fld.name}",
+                ConstraintKind.NOT_NULL,
+                [[fld.name]],
+                enforcement=ConstraintEnforcement.ENFORCED,
+                validation=ConstraintValidation.ALL_ROWS,
+            ).serialize_to_bytes()
+            for fld in arrow_schema
+            if not fld.nullable
+        ]
         return TableInfo(
             name=name,
-            schema_name=schema_name,
+            schema_path=[schema_name],
             columns=SerializedSchema(arrow_schema.serialize().to_pybytes()),
-            not_null_constraints=not_null,
-            unique_constraints=[],
-            check_constraints=[],
+            constraints=constraints,
             comment=None,
             tags={},
         )

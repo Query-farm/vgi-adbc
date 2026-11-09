@@ -6,14 +6,26 @@ All notable changes to **vgi-adbc** are documented here. The format follows
 
 ## Compatibility
 
-vgi-adbc requires **`vgi-python >= 0.16.0`** — the first release whose catalog RPC schema
-matches the `vgi` client extension currently published to the haybarn community repository.
-An older worker fails a client attach with *"Worker returned an out-of-date Apache Arrow
-schema"*. The `vgi` extension is a moving target; CI's `http-e2e` job installs the **live**
+vgi-adbc requires **`vgi-python >= 0.50.0`** — the first release speaking **VGI protocol
+3.2**, which the `vgi` client extension currently published to the haybarn community
+repository requires (it matches the protocol major+minor exactly, so an older worker is
+rejected at attach). The `vgi` extension is a moving target; CI's `http-e2e` job installs the **live**
 extension (and runs nightly), so a future drift ahead of the pinned `vgi-python` is caught as
 a red build, signalling a needed bump.
 
 ## [Unreleased]
+
+### Changed
+- **Ported to VGI protocol 3.2** (`vgi-python` 0.16.0 -> 0.50.0, `vgi-rpc` 0.24.0 -> 0.53.1),
+  matching the `vgi` extension now served by the haybarn community repository. Catalog methods
+  take raw schema paths, and remote NOT NULL columns are declared as canonical `ConstraintInfo`
+  records. The worker's embedded engine stays on haybarn 1.5.4 (its `adbc_scanner` API).
+- Tests: the SQLLogic suite runs `haybarn-unittest --keep-home` (2.0 isolates `$HOME`). The
+  in-process HTTP pytest suite needs a haybarn 2.0 client (`uv run --with 'haybarn>=2.0.0rc11'
+  pytest tests/test_http_transport.py`) and skips on the locked 1.5.4, whose channel serves a
+  pre-3.2 `vgi`; `run_http_tests.sh` still covers the HTTP path with the latest haybarn-cli.
+- Catalog metadata: added `vgi.subtitle`, dropped grader fields from `vgi.agent_test_tasks`
+  and a boilerplate pointer from `vgi.doc_md` (current vgi-lint rules).
 
 ## [0.3.0] — 2026-07-16
 

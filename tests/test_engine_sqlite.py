@@ -478,15 +478,17 @@ def test_catalog_attach_introspect_route(engine: AdbcEngine, sqlite_db: Path, mo
     aod = result.attach_opaque_data
     assert result.default_schema == "main"
 
-    schemas = {s.name for s in catalog.schemas(attach_opaque_data=aod, transaction_opaque_data=None)}
+    schemas = {s.path[0] for s in catalog.schemas(attach_opaque_data=aod, transaction_opaque_data=None)}
     assert "main" in schemas
 
     tables = catalog.schema_contents(
-        attach_opaque_data=aod, transaction_opaque_data=None, name="main", type=SchemaObjectType.TABLE
+        attach_opaque_data=aod, transaction_opaque_data=None, path=["main"], type=SchemaObjectType.TABLE
     )
     assert {t.name for t in tables} >= {"employees", "active_high"}
 
-    info = catalog.table_get(attach_opaque_data=aod, transaction_opaque_data=None, schema_name="main", name="employees")
+    info = catalog.table_get(
+        attach_opaque_data=aod, transaction_opaque_data=None, schema_path=["main"], name="employees"
+    )
     assert info is not None
     scan_schema = pa.ipc.read_schema(pa.py_buffer(info.columns))
     assert scan_schema.field("name").type == pa.string()
@@ -494,7 +496,7 @@ def test_catalog_attach_introspect_route(engine: AdbcEngine, sqlite_db: Path, mo
     routing = catalog.table_scan_function_get(
         attach_opaque_data=aod,
         transaction_opaque_data=None,
-        schema_name="main",
+        schema_path=["main"],
         name="employees",
         at_unit=None,
         at_value=None,
