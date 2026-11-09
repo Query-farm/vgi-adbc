@@ -11,7 +11,8 @@ database) plus a couple of queries against a demonstrative ``employees`` table (
 shape used by the test fixture).
 
 JSON-valued tags (keywords / categories / example_queries / executable_examples /
-agent_test_tasks) are JSON strings; every example is catalog-qualified.
+agent_test_tasks) are JSON strings; every example is catalog-qualified. Agent test tasks
+carry only ``name``/``prompt`` (grader fields are private and never advertised).
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ SCHEMA_COMMENT = (
 
 CATALOG_TAGS: dict[str, str] = {
     "vgi.title": "ADBC Database Connector",
+    "vgi.subtitle": "Query PostgreSQL, SQLite, and other ADBC databases from DuckDB with pushdown to the source.",
     "vgi.doc_llm": (
         "Attach a remote ADBC database (PostgreSQL, SQLite, and others) and query it as if it were "
         "local, with WHERE clauses and column projection pushed down to the source. Attach with "
@@ -49,8 +51,7 @@ CATALOG_TAGS: dict[str, str] = {
         "ordinary SQL. The worker runs the query through an embedded DuckDB with the `adbc_scanner` "
         "extension and streams Arrow back, pushing projection and filters down to the source.\n\n"
         "Attach with the `driver` (e.g. `postgresql`, `sqlite`) and `uri` options; then query the "
-        "attached catalog as `<alias>.<schema>.<table>`. See the executable examples for runnable "
-        "queries.\n\n"
+        "attached catalog as `<alias>.<schema>.<table>`.\n\n"
         "Tables and views are **discovered live** from the attached database — this connector does not "
         "define them. The connection is held server-side, so clients that cannot load native ADBC "
         "drivers (including DuckDB-WASM) can use it too. Read-only."
@@ -113,25 +114,14 @@ CATALOG_TAGS: dict[str, str] = {
             {
                 "name": "discover_tables",
                 "prompt": "What tables does the attached ADBC database expose?",
-                "check_sql": "SELECT count(*) >= 0 FROM duckdb_tables() WHERE database_name = 'adbc'",
-                "success_criteria": (
-                    "The answer lists the attached database's tables, discovered via duckdb_tables() or "
-                    "information_schema scoped to the attached catalog."
-                ),
             },
             {
                 "name": "count_rows",
                 "prompt": "How many rows are in the employees table of the attached database?",
-                "check_sql": "SELECT count(*) >= 0 FROM adbc.main.employees",
-                "success_criteria": "The answer reports the row count of adbc.main.employees.",
             },
             {
                 "name": "filter_pushdown",
                 "prompt": "List the employees earning more than 90000, showing id and name.",
-                "check_sql": "SELECT count(*) >= 0 FROM adbc.main.employees WHERE salary > 90000",
-                "success_criteria": (
-                    "The answer returns the matching employees; the WHERE clause is pushed down to the source."
-                ),
             },
         ]
     ),
