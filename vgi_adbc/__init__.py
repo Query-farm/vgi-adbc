@@ -10,6 +10,7 @@ the browser, for example — can ``ATTACH`` and query a remote database with pus
 
 from __future__ import annotations
 
+import vgi_adbc._filter_engine  # noqa: F401  (must precede any filter evaluation)
 from vgi_adbc.catalog import CATALOG_NAME, AdbcCatalog
 from vgi_adbc.engine import AdbcEngine, AdbcTarget, SessionNotFoundError, get_engine
 from vgi_adbc.functions import ADBC_QUERY_FUNCTION_NAME, ADBC_SCAN_FUNCTION_NAME, AdbcQuery, AdbcScan

@@ -21,6 +21,7 @@ Read-only (v1): all DDL raises ``CatalogReadOnlyError`` via
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import logging
 import uuid
 from collections.abc import Mapping
@@ -28,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 from vgi.catalog import (
+    FUNCTION_VISIBILITY_TABLE_ONLY,
     AttachOpaqueData,
     CatalogAttachResult,
     CatalogInfo,
@@ -369,8 +371,8 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
 
         Returns:
             :class:`TableInfo` objects for ``TABLE`` (remote tables and views); the
-            ``adbc_query`` raw-SQL passthrough function for ``TABLE_FUNCTION``; empty
-            for every other kind.
+            ``adbc_query`` raw-SQL passthrough plus the table_only ``adbc_scan`` for
+            ``TABLE_FUNCTION``; empty for every other kind.
 
         """
         del transaction_opaque_data
@@ -382,7 +384,16 @@ class AdbcCatalog(ReadOnlyCatalogInterface):
             # it receives this attachment's identity (attach_opaque_data) when called.
             session = get_engine().resolve(bytes(attach_opaque_data))
             if name in get_engine().schemas(session):
-                return [self._function_to_info(AdbcQuery, [name])]
+                # Protocol 3.3: every function a table names must be listed here; the
+                # generic ``adbc_scan`` that tables route to is ``table_only`` (hidden from
+                # duckdb_functions() and not directly SQL-callable).
+                return [
+                    self._function_to_info(AdbcQuery, [name]),
+                    dataclasses.replace(
+                        self._function_to_info(AdbcScan, [name]),
+                        visibility=FUNCTION_VISIBILITY_TABLE_ONLY,
+                    ),
+                ]
             return []
         if type != SchemaObjectType.TABLE:
             return []

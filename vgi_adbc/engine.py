@@ -132,7 +132,7 @@ def _default_connect() -> ConnectFn:
             import duckdb
 
             logger.warning("haybarn not importable; using stock duckdb (VGI_ADBC_ALLOW_DUCKDB set)")
-            return duckdb.connect  # type: ignore[no-any-return]
+            return duckdb.connect
         except ImportError:
             pass
     msg = (

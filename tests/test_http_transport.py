@@ -132,7 +132,7 @@ def _vgi_client():  # noqa: ANN202 - haybarn connection with the vgi extension l
         import haybarn
     except ImportError:
         pytest.skip("haybarn not available")
-    # The worker speaks VGI protocol 3.2 and the vgi extension matches major+minor exactly.
+    # The worker speaks VGI protocol 3.3 and the vgi extension matches major+minor exactly.
     # The haybarn 1.5.x community channel only serves an older vgi build, so an in-process
     # 1.5.x client can't attach. The worker's embedded engine stays on the locked haybarn
     # 1.5.4 (its adbc_scanner API), so run this suite with a haybarn 2.0 client overlaid:

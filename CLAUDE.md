@@ -35,7 +35,7 @@ DuckDB (+vgi ext) ──VGI/Arrow──► vgi-adbc worker ──ADBC──► P
    `catalog_attach` resolves an `AdbcTarget`, `engine.attach()` opens the connection and
    returns a 16-byte **session id**, which becomes the catalog's `attach_opaque_data`.
 2. `SELECT * FROM db.main.employees WHERE …` → the extension calls
-   `table_scan_function_get`, which returns
+   `catalog_table_scan_branches_get` (answered from `table_scan_function_get`), which returns
    `ScanFunctionResult(function_name="adbc_scan", positional_arguments=[schema, table])`.
 3. `adbc_scan` runs **in the worker**: `on_bind` introspects the remote table's Arrow
    schema; `cardinality` returns the cached `count(*)`; `process` reads
@@ -139,7 +139,17 @@ Bounds are opportunistic and off by default (defaults preserve v1's unbounded be
   (`catalog_version` asserts it) so a load balancer can pin affinity.
 - **haybarn, not duckdb.** `engine.py` imports `haybarn` (a duckdb-python drop-in) so the
   embedded DuckDB is recent enough to load a recent `adbc_scanner`. `VGI_ADBC_EXTENSION_PATH`
-  loads a local `.duckdb_extension` instead of the community build.
+  loads a local `.duckdb_extension` instead of the community build. haybarn is capped
+  below 1.5.5: that `adbc_scanner` build makes raw handles per-connection and needs explicit
+  `columns` for SQLite queries, breaking the `adbc_query` passthrough.
+- **Filter oracle = stock duckdb 1.5.5.** vgi-python binds every pushed filter predicate
+  against an in-process DuckDB 1.5.5 / Haybarn 1.5.5-rc1 only. `_filter_engine.py` (imported
+  first by `vgi_adbc`) points that evaluator at the `duckdb==1.5.5` dependency, so haybarn
+  stays on the 1.5.4 ADBC engine.
+- **Protocol 3.3 function listing.** `schema_contents(TABLE_FUNCTION)` lists `adbc_query`
+  and the `table_only` `adbc_scan` under every remote schema (the extension refuses a
+  table whose scan function is unlisted). DuckDB then calls them schema-qualified
+  (e.g. `public`), so `AdbcWorker._candidates_for` resolves those two names unscoped.
 - **Clean shutdown.** `AdbcEngine.close_all()` (registered via `atexit` in `get_engine`)
   closes every connection before interpreter shutdown — otherwise `adbc_scanner`'s global
   `ConnectionRegistry` can abort at `__cxa_finalize` with live connections.

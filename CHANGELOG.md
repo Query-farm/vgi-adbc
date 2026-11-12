@@ -6,14 +6,30 @@ All notable changes to **vgi-adbc** are documented here. The format follows
 
 ## Compatibility
 
-vgi-adbc requires **`vgi-python >= 0.50.0`** — the first release speaking **VGI protocol
-3.2**, which the `vgi` client extension currently published to the haybarn community
+vgi-adbc requires **`vgi-python >= 0.51.0`** — the first release speaking **VGI protocol
+3.3**, which the `vgi` client extension currently published to the haybarn community
 repository requires (it matches the protocol major+minor exactly, so an older worker is
 rejected at attach). The `vgi` extension is a moving target; CI's `http-e2e` job installs the **live**
 extension (and runs nightly), so a future drift ahead of the pinned `vgi-python` is caught as
 a red build, signalling a needed bump.
 
 ## [Unreleased]
+
+## [0.5.0] — 2026-11-12
+
+### Changed
+- **Ported to VGI protocol 3.3** (`vgi-python` 0.50.0 -> 0.51.0), matching the `vgi`
+  extension now served by the haybarn community repository; 3.2 extensions are incompatible.
+- `adbc_scan` (the generic scan every remote table routes to) is now listed in each remote
+  schema with `table_only` visibility: hidden from `duckdb_functions()` and no longer
+  callable directly from SQL. Tables and `adbc_query` are unchanged.
+
+### Fixed
+- Filter pushdown against the 3.3 extension: vgi-python binds pushed predicates against
+  DuckDB 1.5.5 only, so the worker now depends on stock `duckdb==1.5.5` (+ `numpy`) for that
+  evaluator while the ADBC engine stays on haybarn 1.5.4 (capped `<1.5.5`).
+- Tables in non-`main` remote schemas (PostgreSQL `public`) dispatch their schema-qualified
+  `adbc_scan` / `adbc_query` calls correctly.
 
 ## [0.4.0] — 2026-11-09
 

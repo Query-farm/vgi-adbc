@@ -11,13 +11,16 @@ backs every remote table scan.
 from __future__ import annotations
 
 import contextlib
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from vgi.catalog.attach_option import AttachOption
 from vgi.worker import Worker
 
 from vgi_adbc.catalog import CATALOG_NAME, AdbcCatalog
-from vgi_adbc.functions import AdbcQuery, AdbcScan
+from vgi_adbc.functions import ADBC_QUERY_FUNCTION_NAME, ADBC_SCAN_FUNCTION_NAME, AdbcQuery, AdbcScan
+
+if TYPE_CHECKING:
+    from vgi.function import Function
 
 
 class AdbcWorker(Worker):
@@ -60,6 +63,30 @@ class AdbcWorker(Worker):
                 desc="Re-read the remote catalog at most this often so remote DDL becomes visible; 0 disables."
             ),
         ] = 0.0
+
+    def _candidates_for(self, function_name: str, schema_path: list[str] | None) -> list[type[Function]]:
+        """Resolve ``adbc_scan`` / ``adbc_query`` in whichever remote schema called them.
+
+        The catalog lists both functions under every remote schema (``public``, ...), which
+        are discovered at attach time, so DuckDB dispatches them schema-qualified. The SDK
+        registry only knows the worker-level registration under ``main``; these two
+        functions are schema-agnostic (the schema arrives as an argument / attach state),
+        so they are resolved unscoped instead of failing an exact-schema lookup.
+
+        Args:
+            function_name: The function DuckDB is calling.
+            schema_path: The schema the call was qualified with, if any.
+
+        Returns:
+            The candidate function classes.
+
+        """
+        if function_name in _SCHEMA_AGNOSTIC_FUNCTIONS:
+            schema_path = None
+        return super()._candidates_for(function_name, schema_path)
+
+
+_SCHEMA_AGNOSTIC_FUNCTIONS = frozenset({ADBC_SCAN_FUNCTION_NAME, ADBC_QUERY_FUNCTION_NAME})
 
 
 def _install_sigterm_drain() -> None:

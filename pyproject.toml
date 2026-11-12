@@ -1,6 +1,6 @@
 [project]
 name = "vgi-adbc"
-version = "0.4.0"
+version = "0.5.0"
 description = "Query PostgreSQL, SQLite, and any ADBC database from DuckDB over VGI — server-side ADBC via an embedded haybarn DuckDB + the adbc_scanner community extension"
 readme = "README.md"
 keywords = [
@@ -29,23 +29,29 @@ classifiers = [
     "Topic :: Database :: Front-Ends",
 ]
 dependencies = [
-    # 0.50.0 is the first vgi-python speaking VGI protocol 3.2, which the current
+    # 0.51.0 is the first vgi-python speaking VGI protocol 3.3, which the current
     # community `vgi` client extension requires (it matches protocol major+minor
     # exactly, so an older worker is rejected at attach).
-    "vgi-python>=0.50.0",
+    "vgi-python>=0.51.0",
     "pyarrow>=17",
     # haybarn is a duckdb-python drop-in (v1.5.4) whose community extension
     # repository serves a recent adbc_scanner build. The worker runs its ADBC
     # queries in an in-process haybarn DuckDB. Prerelease floor is intentional —
-    # haybarn currently ships as release candidates.
-    "haybarn>=1.5.4rc1",
+    # haybarn currently ships as release candidates. Capped below 1.5.5: that
+    # adbc_scanner build changes the raw-handle API adbc_query relies on.
+    "haybarn>=1.5.4rc1,<1.5.5",
+    # vgi-python binds pushed filter predicates (vgi.duckdb.standard.v1) only against
+    # DuckDB 1.5.5 / Haybarn 1.5.5-rc1 exactly; vgi_adbc/_filter_engine.py routes that
+    # evaluator to this stock duckdb build. numpy is needed by that evaluator.
+    "duckdb==1.5.5",
+    "numpy>=2",
 ]
 
 [project.optional-dependencies]
 # HTTP-serving extra — installed by the published Docker image (`.[serve]`) so the
 # container can serve the worker over HTTP (/health + VGI RPC) via `vgi-serve --http`.
 # A plain stdio install stays lean (DuckDB owns the pipe, no HTTP server needed).
-serve = ["vgi-python[http]>=0.50.0"]
+serve = ["vgi-python[http]>=0.51.0"]
 dev = [
     "mypy",
     "pyarrow-stubs",
