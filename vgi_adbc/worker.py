@@ -37,16 +37,24 @@ class AdbcWorker(Worker):
         ADBC driver when set. Empty values are treated as "not supplied".
         """
 
+        # Required: the connector can't pick a driver for you, and declaring it lets the
+        # extension (and docs) say so before the attach rather than after.
         driver: Annotated[
             str,
-            AttachOption(desc="ADBC driver name or path to a driver library / manifest (e.g. 'postgresql', 'sqlite')."),
-        ] = ""
+            AttachOption(
+                desc="ADBC driver name or path to a driver library / manifest (e.g. 'postgresql', 'sqlite').",
+                required=True,
+            ),
+        ]
         uri: Annotated[
             str,
             AttachOption(desc="ADBC connection string (e.g. 'postgresql://user:pw@host:5432/db' or a SQLite path)."),
         ] = ""
         username: Annotated[str, AttachOption(desc="Database username, when the driver requires one.")] = ""
-        password: Annotated[str, AttachOption(desc="Database password, when the driver requires one.")] = ""
+        password: Annotated[
+            str,
+            AttachOption(desc="Database password, when the driver requires one.", secret=True),
+        ] = ""
         database: Annotated[str, AttachOption(desc="Database name for drivers that take it as a separate option.")] = ""
         entrypoint: Annotated[str, AttachOption(desc="Custom ADBC driver entry-point symbol.")] = ""
         search_paths: Annotated[

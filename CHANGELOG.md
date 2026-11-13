@@ -15,6 +15,16 @@ a red build, signalling a needed bump.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-11-13
+
+### Fixed
+- `driver` is now declared as a **required** ATTACH option. The worker always refused to
+  attach without it, but advertised it as optional, so clients (and the Query.Farm worker
+  page) offered an ATTACH that could only fail. The extension now reports the missing
+  option before attaching.
+- `password` is declared `secret`, so the extension redacts it from `duckdb_databases()`
+  and never logs it.
+
 ## [0.5.0] — 2026-11-12
 
 ### Changed
