@@ -44,6 +44,7 @@ SELECT 'filtered=' || coalesce(string_agg(name, ',' ORDER BY id), '') FROM db.ma
 SELECT 'projected=' || string_agg(column_name, ',' ORDER BY column_name) FROM (DESCRIBE SELECT id, name FROM db.main.employees);
 SELECT 'view=' || count(*) FROM db.main.active_high;
 SELECT 'in=' || count(*) FROM db.main.employees WHERE dept IN ('eng', 'ops');
+SELECT 'joined=' || string_agg(e.name, ',' ORDER BY e.name) FROM db.main.employees AS e JOIN db.main.adbc_query('SELECT dept, AVG(salary) AS avg_salary FROM employees GROUP BY dept') AS d ON d.dept = e.dept WHERE e.salary > d.avg_salary;
 SQL
 )
 OUT=$(echo "$SQL" | uvx haybarn-cli :memory: -unsigned -list -noheader 2>&1)
@@ -55,5 +56,8 @@ grep -Fxq 'filtered=Alice,Bob'  <<<"$OUT" || fail 'filtered=Alice,Bob'
 grep -Fxq 'projected=id,name'   <<<"$OUT" || fail 'projected=id,name'
 grep -Fxq 'view=3'              <<<"$OUT" || fail 'view=3'
 grep -Fxq 'in=3'               <<<"$OUT" || fail 'in=3'
+# Two concurrent remote scans in one query (table JOIN adbc_query): works over HTTP because
+# one vgi-serve process holds the session (README "Sticky sessions").
+grep -Fxq 'joined=Alice,Carol'  <<<"$OUT" || fail 'joined=Alice,Carol'
 
 echo "==> HTTP transport E2E passed (attach + introspect + scan + projection/filter pushdown over HTTP)"

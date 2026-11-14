@@ -131,6 +131,13 @@ Bounds are opportunistic and off by default (defaults preserve v1's unbounded be
   session fails loudly and the client re-`ATTACH`es. (`attach_opaque_data` is just the 16-byte
   session id; no target/credentials ride in it. Stateless reconnect for connections with *no*
   connection-local state is deferred.)
+  **Concurrent scans hit this too, with no prior error:** a stdio process serves one open
+  stream at a time, so one query that scans two relations of the same attach concurrently
+  (table JOIN table, table JOIN `adbc_query`, correlated subquery) can get its second
+  `init` routed to a fresh sibling → `SessionNotFoundError`, intermittently (verified
+  2026-11: ~1 in 3 for `employees JOIN adbc_query(...)`; deterministic for some GROUP BY
+  shapes). HTTP (single `vgi-serve` process) is unaffected — `run_http_tests.sh` asserts a
+  join. Published examples therefore use ONE remote scan + local catalog metadata.
 - **Streaming likewise never silently restarts.** A live `RecordBatchReader` is a
   non-serializable cursor position. If a `process` call for an *already-opened* scan finds no
   reader in this process — the reader was reaped as idle, or a hop landed the batch elsewhere —

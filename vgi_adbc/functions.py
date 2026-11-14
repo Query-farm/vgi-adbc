@@ -48,6 +48,7 @@ from vgi_rpc import ArrowSerializableDataclass
 from vgi_rpc.rpc import OutputCollector
 
 from vgi_adbc.engine import get_engine
+from vgi_adbc.metadata import COMPOSED_SOURCE_DEFINITION_EXAMPLE, COMPOSED_TYPE_MAPPING_EXAMPLE
 from vgi_adbc.sql import quote_identifier
 
 if TYPE_CHECKING:
@@ -491,6 +492,11 @@ class AdbcQuery(TableFunctionGenerator[_QueryArgs, _ScanState]):
                 description="Project a column from a native query",
                 sql="SELECT one FROM adbc.main.adbc_query('SELECT 1 AS one')",
             ),
+            # Composed examples before the analytics.summary one: that table exists only on
+            # a real deployment, and on a fixture its error moves the stdio worker pool to a
+            # sibling process, failing every later example of the same attach.
+            FunctionExample(**COMPOSED_TYPE_MAPPING_EXAMPLE),
+            FunctionExample(**COMPOSED_SOURCE_DEFINITION_EXAMPLE),
             FunctionExample(
                 description="Aggregate a native query reaching a table the catalog does not mirror",
                 sql="SELECT count(*) FROM adbc.main.adbc_query('SELECT * FROM analytics.summary')",

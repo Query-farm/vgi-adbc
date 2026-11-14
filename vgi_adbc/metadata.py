@@ -22,6 +22,41 @@ import json
 _REPO = "https://github.com/Query-farm/vgi-adbc"
 _ISSUES = f"{_REPO}/issues"
 
+# Composed examples: ``adbc_query`` (native SQL on the source) joined to the mirrored
+# catalog's own metadata. Each reads exactly one worker stream (the ``adbc_query`` scan;
+# ``duckdb_columns()``/``duckdb_tables()`` answer from the attached catalog), so they run
+# reliably on every transport — see README "Sticky sessions" for why a query that opens
+# two remote scans at once is not portable to the subprocess transport. Defined once here
+# and referenced by both the schema-level list and ``AdbcQuery.Meta.examples``.
+COMPOSED_TYPE_MAPPING_EXAMPLE: dict[str, str] = {
+    "description": (
+        "Compare each column's type as declared in the source SQLite schema (PRAGMA table_info "
+        "via adbc_query) with the DuckDB type the mirrored employees table exposes, "
+        "e.g. INTEGER -> BIGINT, REAL -> DOUBLE"
+    ),
+    "sql": (
+        "SELECT p.name AS column_name, p.type AS source_type, c.data_type AS duckdb_type "
+        "FROM adbc.main.adbc_query('PRAGMA table_info(employees)') AS p "
+        "JOIN duckdb_columns() AS c ON c.database_name = 'adbc' AND c.schema_name = 'main' "
+        "AND c.table_name = 'employees' AND c.column_name = p.name "
+        "ORDER BY p.cid"
+    ),
+}
+
+COMPOSED_SOURCE_DEFINITION_EXAMPLE: dict[str, str] = {
+    "description": (
+        "For every relation the catalog mirrors, show whether the source database defines it as a "
+        "table or a view and its CREATE statement (sqlite_master via adbc_query joined to duckdb_tables)"
+    ),
+    "sql": (
+        "SELECT t.table_name, m.type AS source_kind, m.sql AS source_definition "
+        "FROM duckdb_tables() AS t "
+        "JOIN adbc.main.adbc_query('SELECT name, type, sql FROM sqlite_master') AS m ON m.name = t.table_name "
+        "WHERE t.database_name = 'adbc' AND t.schema_name = 'main' "
+        "ORDER BY t.table_name"
+    ),
+}
+
 CATALOG_COMMENT = (
     "Query PostgreSQL, SQLite, and any other ADBC database from DuckDB over VGI. The worker holds the "
     "native ADBC connection server-side and streams Arrow back, with projection and filter pushdown to "
@@ -123,6 +158,14 @@ CATALOG_TAGS: dict[str, str] = {
                 "name": "filter_pushdown",
                 "prompt": "List the employees earning more than 90000, showing id and name.",
             },
+            {
+                "name": "source_views",
+                "prompt": (
+                    "Which relations in the main schema of the attached database are defined as views in the "
+                    "source database itself? Return one VARCHAR column named relation_name, one row per view, "
+                    "ordered by relation_name."
+                ),
+            },
         ]
     ),
 }
@@ -160,6 +203,8 @@ SCHEMA_TAGS: dict[str, str] = {
                 "description": "Count rows of a remote table",
                 "sql": "SELECT count(*) FROM adbc.main.employees",
             },
+            COMPOSED_TYPE_MAPPING_EXAMPLE,
+            COMPOSED_SOURCE_DEFINITION_EXAMPLE,
         ]
     ),
 }

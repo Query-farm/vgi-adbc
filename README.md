@@ -120,6 +120,15 @@ SELECT count(*) FROM pg.public.adbc_query('SELECT * FROM analytics.summary');
 
 -- A SQLite PRAGMA — impossible to express against the mirror:
 SELECT name, pk FROM sl.main.adbc_query('PRAGMA table_info(orders)');
+
+-- Combine it with the mirror: each column's declared SQLite type next to the DuckDB type
+-- the attached table exposes (e.g. INTEGER -> BIGINT, REAL -> DOUBLE):
+SELECT p.name AS column_name, p.type AS source_type, c.data_type AS duckdb_type
+FROM sl.main.adbc_query('PRAGMA table_info(orders)') AS p
+JOIN duckdb_columns() AS c
+  ON c.database_name = 'sl' AND c.schema_name = 'main'
+ AND c.table_name = 'orders' AND c.column_name = p.name
+ORDER BY p.cid;
 ```
 
 The result schema is determined at query time. `adbc_query` is scoped to the attachment it
@@ -152,6 +161,16 @@ the (AEAD-sealed, on HTTP) attach handle. Every follow-up call **must** reach th
 process. A call that lands elsewhere — a mis-routed HTTP request, or the VGI worker pool
 spawning a sibling subprocess (notably after a prior error) — fails loudly with a clear
 `SessionNotFoundError`; re-`ATTACH` to recover.
+
+> **Queries that read two remote relations at once (subprocess transport).** A stdio
+> worker process serves one open stream at a time, so when a single query scans two
+> relations of the same attachment concurrently — a join of two remote tables, a remote
+> table joined to `adbc_query(...)`, a correlated subquery — the VGI extension can hand the
+> second scan to a sibling subprocess, which doesn't hold the session: the query fails with
+> `SessionNotFoundError`, intermittently, depending on how DuckDB schedules the scans.
+> Over **HTTP** (one `vgi-serve` process holds every session) such queries work. On the
+> subprocess transport, push the join down into one native `adbc_query('… JOIN …')`, or
+> combine a single remote scan with local data (e.g. `duckdb_columns()`, as above).
 
 The worker **deliberately does not reconnect** a lost session. A rebuilt connection is a
 *fresh* connection: it would silently lose an open transaction, temp tables, or session

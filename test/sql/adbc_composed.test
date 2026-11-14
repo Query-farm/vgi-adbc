@@ -1,0 +1,37 @@
+# name: test/sql/adbc_composed.test
+# description: Composed queries — adbc_query (native SQL on the source) joined to the mirrored catalog's metadata. Mirrors the published composed examples (vgi_adbc/metadata.py) and the source_views agent-task grader (vgi-agent-tests.yaml).
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+require-env VGI_ADBC_TEST_SQLITE
+
+statement ok
+ATTACH 'adbc' AS adbc (TYPE vgi, LOCATION '${VGI_TEST_WORKER}', driver 'sqlite', uri '${VGI_ADBC_TEST_SQLITE}');
+
+# COMPOSED_TYPE_MAPPING_EXAMPLE: source-declared types (PRAGMA via adbc_query) next to the
+# DuckDB types the mirrored table exposes.
+query TTT
+SELECT p.name AS column_name, p.type AS source_type, c.data_type AS duckdb_type FROM adbc.main.adbc_query('PRAGMA table_info(employees)') AS p JOIN duckdb_columns() AS c ON c.database_name = 'adbc' AND c.schema_name = 'main' AND c.table_name = 'employees' AND c.column_name = p.name ORDER BY p.cid;
+----
+id	INTEGER	BIGINT
+name	TEXT	VARCHAR
+dept	TEXT	VARCHAR
+salary	REAL	DOUBLE
+active	INTEGER	BIGINT
+
+# COMPOSED_SOURCE_DEFINITION_EXAMPLE: each mirrored relation's source kind + CREATE statement.
+query TTT
+SELECT t.table_name, m.type AS source_kind, m.sql AS source_definition FROM duckdb_tables() AS t JOIN adbc.main.adbc_query('SELECT name, type, sql FROM sqlite_master') AS m ON m.name = t.table_name WHERE t.database_name = 'adbc' AND t.schema_name = 'main' ORDER BY t.table_name;
+----
+active_high	view	CREATE VIEW active_high AS SELECT * FROM employees WHERE active = 1 AND salary > 50000
+employees	table	CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, dept TEXT, salary REAL, active INTEGER)
+
+# Agent task source_views (grader reference_sql in vgi-agent-tests.yaml).
+query T
+SELECT name AS relation_name FROM adbc.main.adbc_query('SELECT name FROM sqlite_master WHERE type = ''view''') ORDER BY relation_name;
+----
+active_high
+
+statement ok
+DETACH adbc;
