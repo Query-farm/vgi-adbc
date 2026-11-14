@@ -167,7 +167,8 @@ spawning a sibling subprocess (notably after a prior error) — fails loudly wit
 > relations of the same attachment concurrently — a join of two remote tables, a remote
 > table joined to `adbc_query(...)`, a correlated subquery — the VGI extension can hand the
 > second scan to a sibling subprocess, which doesn't hold the session: the query fails with
-> `SessionNotFoundError`, intermittently, depending on how DuckDB schedules the scans.
+> `SessionNotFoundError` — every time for some shapes (a correlated subquery under
+> `GROUP BY`), intermittently for others, depending on how DuckDB schedules the scans.
 > Over **HTTP** (one `vgi-serve` process holds every session) such queries work. On the
 > subprocess transport, push the join down into one native `adbc_query('… JOIN …')`, or
 > combine a single remote scan with local data (e.g. `duckdb_columns()`, as above).

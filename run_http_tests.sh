@@ -45,6 +45,7 @@ SELECT 'projected=' || string_agg(column_name, ',' ORDER BY column_name) FROM (D
 SELECT 'view=' || count(*) FROM db.main.active_high;
 SELECT 'in=' || count(*) FROM db.main.employees WHERE dept IN ('eng', 'ops');
 SELECT 'joined=' || string_agg(e.name, ',' ORDER BY e.name) FROM db.main.employees AS e JOIN db.main.adbc_query('SELECT dept, AVG(salary) AS avg_salary FROM employees GROUP BY dept') AS d ON d.dept = e.dept WHERE e.salary > d.avg_salary;
+SELECT 'correlated=' || string_agg(dept || ':' || n, ',' ORDER BY dept) FROM (SELECT dept, (SELECT count(*) FROM db.main.active_high AS a WHERE a.dept = e.dept) AS n FROM db.main.employees AS e GROUP BY dept);
 SQL
 )
 OUT=$(echo "$SQL" | uvx haybarn-cli :memory: -unsigned -list -noheader 2>&1)
@@ -59,5 +60,8 @@ grep -Fxq 'in=3'               <<<"$OUT" || fail 'in=3'
 # Two concurrent remote scans in one query (table JOIN adbc_query): works over HTTP because
 # one vgi-serve process holds the session (README "Sticky sessions").
 grep -Fxq 'joined=Alice,Carol'  <<<"$OUT" || fail 'joined=Alice,Carol'
+# A correlated subquery under GROUP BY opens two scans of the attach at once; on the
+# subprocess transport this shape fails deterministically with SessionNotFoundError.
+grep -Fxq 'correlated=eng:2,ops:0,sales:1' <<<"$OUT" || fail 'correlated=eng:2,ops:0,sales:1'
 
 echo "==> HTTP transport E2E passed (attach + introspect + scan + projection/filter pushdown over HTTP)"
